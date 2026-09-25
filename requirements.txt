@@ -1,0 +1,4 @@
+python-telegram-bot[job-queue]==21.11
+Pillow==11.3.0
+asyncpg==0.30.0
+python-dotenv==1.1.1
