@@ -3,11 +3,27 @@ from __future__ import annotations
 import logging
 import os
 
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    MessageHandler,
+    filters,
+)
 
 from bot import db
 from bot.config import BOT_TOKEN, DATABASE_URL
-from bot.handlers import card_cmd, join_cb, leaderboard_cmd, restore_jobs, start_cmd
+from bot.handlers import (
+    cards_cmd,
+    group_activity,
+    join_cb,
+    lb_cmd,
+    resetlb_cb,
+    resetlb_cmd,
+    restore_jobs,
+    showlb_cb,
+    start_cmd,
+)
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -41,9 +57,19 @@ def main() -> None:
         .build()
     )
     app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("card", card_cmd))
-    app.add_handler(CommandHandler("leaderboard", leaderboard_cmd))
+    app.add_handler(CommandHandler("cards", cards_cmd))
+    app.add_handler(CommandHandler("lb", lb_cmd))
+    app.add_handler(CommandHandler("resetlb", resetlb_cmd))
     app.add_handler(CallbackQueryHandler(join_cb, pattern=r"^join:\d+$"))
+    app.add_handler(CallbackQueryHandler(showlb_cb, pattern=r"^showlb$"))
+    app.add_handler(CallbackQueryHandler(resetlb_cb, pattern=r"^resetlb:(yes|no)$"))
+    app.add_handler(
+        MessageHandler(
+            filters.ChatType.GROUPS & ~filters.StatusUpdate.ALL,
+            group_activity,
+        ),
+        group=1,
+    )
     log.info("Polling…")
     app.run_polling(allowed_updates=["message", "callback_query"])
 
