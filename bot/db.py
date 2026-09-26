@@ -73,6 +73,9 @@ async def init_schema() -> None:
             );
             """
         )
+        await conn.execute(
+            "ALTER TABLE games ADD COLUMN IF NOT EXISTS flavor TEXT"
+        )
 
 
 async def active_game(chat_id: int) -> asyncpg.Record | None:
@@ -93,17 +96,32 @@ async def waiting_games() -> list[asyncpg.Record]:
     )
 
 
-async def create_game(chat_id: int, mode: str, expires_at) -> asyncpg.Record:
+async def create_game(chat_id: int, mode: str, expires_at, flavor: str | None = None) -> asyncpg.Record:
     return await pool().fetchrow(
         """
-        INSERT INTO games (chat_id, status, mode, expires_at)
-        VALUES ($1, 'waiting', $2, $3)
+        INSERT INTO games (chat_id, status, mode, expires_at, flavor)
+        VALUES ($1, 'waiting', $2, $3, $4)
         RETURNING *
         """,
         chat_id,
         mode,
         expires_at,
+        flavor,
     )
+
+
+async def caller_standing(chat_id: int, user_id: int) -> dict:
+    rows = await pool().fetch(
+        """
+        SELECT user_id FROM player_stats
+        WHERE chat_id = $1
+        ORDER BY score DESC, wins DESC, played ASC
+        """,
+        chat_id,
+    )
+    on_board = any(r["user_id"] == user_id for r in rows)
+    rank = next((i for i, r in enumerate(rows, start=1) if r["user_id"] == user_id), None)
+    return {"on_board": on_board, "rank": rank, "is_first": rank == 1}
 
 
 async def set_message_id(game_id: int, message_id: int) -> None:
@@ -203,14 +221,23 @@ async def save_deal(game_id: int, assignments: list[dict], winner_user_id: int) 
 
 async def bump_stats(
     chat_id: int,
-    players: list[asyncpg.Record],
+    players: list,
     winner_user_id: int,
     points: int,
+    joker_user_id: int | None = None,
+    joker_penalty: int = 5,
 ) -> None:
     async with pool().acquire() as conn:
         async with conn.transaction():
             for p in players:
-                is_win = p["user_id"] == winner_user_id
+                uid = p["user_id"]
+                is_win = uid == winner_user_id
+                is_joker = joker_user_id is not None and uid == joker_user_id
+                delta = 0
+                if is_win:
+                    delta += points
+                if is_joker:
+                    delta -= joker_penalty
                 await conn.execute(
                     """
                     INSERT INTO player_stats
@@ -224,10 +251,10 @@ async def bump_stats(
                         wins = player_stats.wins + EXCLUDED.wins
                     """,
                     chat_id,
-                    p["user_id"],
+                    uid,
                     p["username"],
                     p["first_name"],
-                    points if is_win else 0,
+                    delta,
                     1 if is_win else 0,
                 )
 
@@ -243,3 +270,30 @@ async def leaderboard(chat_id: int, limit: int = 15) -> list[asyncpg.Record]:
         chat_id,
         limit,
     )
+
+
+async def reset_group(chat_id: int) -> list[asyncpg.Record]:
+    """Wipe this group's leaderboard and cancel any waiting/running lobby.
+    Does not start a new game. Returns cancelled games so callers can delete msgs.
+    """
+    async with pool().acquire() as conn:
+        async with conn.transaction():
+            games = await conn.fetch(
+                """
+                SELECT * FROM games
+                WHERE chat_id = $1 AND status IN ('waiting', 'running')
+                """,
+                chat_id,
+            )
+            await conn.execute(
+                """
+                UPDATE games SET status = 'expired'
+                WHERE chat_id = $1 AND status IN ('waiting', 'running')
+                """,
+                chat_id,
+            )
+            await conn.execute(
+                "DELETE FROM player_stats WHERE chat_id = $1",
+                chat_id,
+            )
+            return list(games)
