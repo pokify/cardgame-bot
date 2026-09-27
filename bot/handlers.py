@@ -347,37 +347,8 @@ async def showlb_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def group_activity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """If someone posts after the lobby, bump it to the bottom 30s later."""
-    message = update.effective_message
-    chat = update.effective_chat
-    if message is None or chat is None:
-        return
-    if chat.type not in ("group", "supergroup"):
-        return
-    user = update.effective_user
-    if user and user.is_bot:
-        return
-    text = message.text or message.caption or ""
-    if text.startswith("/"):
-        return
-
-    game = await db.active_game(chat.id)
-    if game is None or game["status"] != "waiting" or not game["message_id"]:
-        return
-    if message.message_id == game["message_id"]:
-        return
-
-    jq = context.job_queue
-    name = f"bump:{chat.id}"
-    for job in jq.get_jobs_by_name(name):
-        job.schedule_removal()
-    jq.run_once(
-        bump_lobby_job,
-        when=BUMP_SECONDS,
-        data={"chat_id": chat.id, "game_id": game["id"]},
-        name=name,
-        chat_id=chat.id,
-    )
+    """Diagnostic mode: temporarily disable lobby bumping."""
+    return
 
 
 async def bump_lobby_job(context: ContextTypes.DEFAULT_TYPE) -> None:
