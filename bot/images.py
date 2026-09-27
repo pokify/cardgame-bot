@@ -8,36 +8,89 @@ from PIL import Image, ImageDraw, ImageFont
 from bot.config import CARDS, CARDS_DIR
 
 
-def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    # Prefer font bundled with the project (works on Railway / any host).
-    bundled = Path(__file__).resolve().parent.parent / "assets" / "fonts" / "DejaVuSans-Bold.ttf"
+BASE_DIR = Path(__file__).resolve().parent.parent
+BUNDLED_FONT = BASE_DIR / "assets" / "fonts" / "DejaVuSans-Bold.ttf"
+
+# Render the source card artwork at 50% of its native 418x579 size.
+CARD_SCALE = 0.50
+
+# Typography is deliberately sized for the smaller composite image so Telegram
+# does not have to downscale a very wide 3-4 player image as aggressively.
+NAME_FONT_SIZE = 120
+NAME_MIN_FONT_SIZE = 88
+SCORE_FONT_SIZE = 80
+SCORE_MIN_FONT_SIZE = 70
+
+
+def _font(size: int) -> ImageFont.FreeTypeFont:
+    """Load the bundled TTF, with known system-font fallbacks."""
     candidates = (
-        bundled,
+        BUNDLED_FONT,
         Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+        Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"),
         Path("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"),
         Path("/usr/share/fonts/truetype/freefont/FreeSansBold.ttf"),
     )
-    for name in candidates:
-        if not name.exists():
+
+    for path in candidates:
+        if not path.exists():
             continue
         try:
-            return ImageFont.truetype(str(name), size)
-        except OSError:
-            # Corrupt / wrong format file — try next candidate
+            return ImageFont.truetype(str(path), size)
+        except (OSError, ValueError):
             continue
-    return ImageFont.load_default()
+
+    raise RuntimeError(
+        "No usable TrueType font found. Expected a valid font at "
+        f"{BUNDLED_FONT} or a standard Linux font location."
+    )
+
+
+def _fit_font(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    max_width: int,
+    start_size: int,
+    min_size: int,
+) -> tuple[ImageFont.FreeTypeFont, float]:
+    """Fit text to a width without allowing the font to collapse below a floor."""
+    size = start_size
+    font = _font(size)
+    width = draw.textlength(text, font=font)
+
+    while width > max_width and size > min_size:
+        size = max(min_size, size - 4)
+        font = _font(size)
+        width = draw.textlength(text, font=font)
+
+    return font, width
 
 
 def _placeholder_card(label: str, score: int, size: tuple[int, int] = (280, 400)) -> Image.Image:
     img = Image.new("RGB", size, (28, 28, 36))
     draw = ImageDraw.Draw(img)
-    draw.rounded_rectangle((8, 8, size[0] - 8, size[1] - 8), radius=24, outline=(230, 230, 230), width=4)
+    draw.rounded_rectangle(
+        (8, 8, size[0] - 8, size[1] - 8),
+        radius=24,
+        outline=(230, 230, 230),
+        width=4,
+    )
     title = _font(48)
     sub = _font(28)
     tw = draw.textlength(label, font=title)
-    draw.text(((size[0] - tw) / 2, size[1] / 2 - 50), label, fill=(255, 255, 255), font=title)
+    draw.text(
+        ((size[0] - tw) / 2, size[1] / 2 - 50),
+        label,
+        fill=(255, 255, 255),
+        font=title,
+    )
     sw = draw.textlength(str(score), font=sub)
-    draw.text(((size[0] - sw) / 2, size[1] / 2 + 16), str(score), fill=(200, 200, 200), font=sub)
+    draw.text(
+        ((size[0] - sw) / 2, size[1] / 2 + 16),
+        str(score),
+        fill=(200, 200, 200),
+        font=sub,
+    )
     return img
 
 
@@ -45,8 +98,7 @@ def load_card(card_key: str) -> Image.Image:
     meta = CARDS[card_key]
     path = CARDS_DIR / meta["file"]
     if path.exists():
-        img = Image.open(path).convert("RGBA")
-        return img
+        return Image.open(path).convert("RGBA")
     return _placeholder_card(meta["label"], meta["score"]).convert("RGBA")
 
 
@@ -58,83 +110,119 @@ def display_name(username: str | None, first_name: str | None, user_id: int) -> 
     return str(user_id)
 
 
-def render_deal(players: list[dict]) -> BytesIO:
-    """players: {username, first_name, user_id, card_key, score}"""
-    # Keep cards near native resolution so they stay sharp (no upscaling).
-    # Typical source is ~418x579; we target height 560 max.
-    card_target_h = 560
-    gap = 36
-    pad = 40
+def _scale_card(raw: Image.Image) -> Image.Image:
+    """Scale card artwork to 50% while preserving its native aspect ratio."""
+    w = max(1, round(raw.width * CARD_SCALE))
+    h = max(1, round(raw.height * CARD_SCALE))
 
-    cards: list[tuple[str, str, Image.Image]] = []
+    if (w, h) == raw.size:
+        return raw
+
+    # LANCZOS gives a clean reduction without upscaling the card artwork.
+    return raw.resize((w, h), Image.Resampling.LANCZOS)
+
+
+def render_deal(players: list[dict]) -> BytesIO:
+    """Render the existing deal as a compact Telegram-friendly composite.
+
+    players: {username, first_name, user_id, card_key, score}
+    """
+    gap = 18
+    pad_x = 18
+    pad_y = 18
+    name_area_h = 120
+    score_area_h = 150
+
+    cards: list[tuple[str, int, Image.Image]] = []
     for p in players:
         raw = load_card(p["card_key"])
-        # Scale down only if larger than target; never upscale.
-        if raw.height > card_target_h:
-            ratio = card_target_h / raw.height
-            w = max(1, int(raw.width * ratio))
-            h = card_target_h
-            im = raw.resize((w, h), Image.Resampling.LANCZOS)
-        else:
-            im = raw
-            w, h = im.size
+        im = _scale_card(raw)
         name = display_name(p.get("username"), p.get("first_name"), p["user_id"])
+
         if "display_score" in p:
             score = p["display_score"]
         elif p.get("card_key") == "joker":
             score = -5
         else:
             score = p.get("score", CARDS[p["card_key"]]["score"])
-        cards.append((name, f"Score: {score}", im))
 
-    min_card_w = min(im.width for _, _, im in cards)
-    # Large fonts so text survives Telegram's aggressive downscale.
-    font_size = max(260, min(400, int(min_card_w * 0.85)))
-    font = _font(font_size)
-    # Generous vertical bands for names and scores
-    label_h = font_size + 100
-    score_h = font_size + 100
+        cards.append((name, score, im))
 
     card_h = max(im.height for _, _, im in cards)
-    total_w = pad * 2 + sum(im.width for _, _, im in cards) + gap * (len(cards) - 1)
-    total_h = pad * 2 + label_h + card_h + score_h
+    total_w = (
+        pad_x * 2
+        + sum(im.width for _, _, im in cards)
+        + gap * (len(cards) - 1)
+    )
+    total_h = pad_y * 2 + name_area_h + card_h + score_area_h
+
     canvas = Image.new("RGB", (total_w, total_h), (248, 248, 248))
     draw = ImageDraw.Draw(canvas)
 
-    x = pad
-    for name, score_text, im in cards:
-        name_font = font
-        tw = draw.textlength(name, font=name_font)
-        size = font_size
-        while tw > im.width - 12 and size > 80:
-            size -= 12
-            name_font = _font(size)
-            tw = draw.textlength(name, font=name_font)
+    x = pad_x
+    for name, score, im in cards:
+        # Keep names readable. At 209px card width, long names are truncated
+        # rather than shrinking to an unreadable font size.
+        name_font, name_w = _fit_font(
+            draw,
+            name,
+            max_width=max(1, im.width - 12),
+            start_size=NAME_FONT_SIZE,
+            min_size=NAME_MIN_FONT_SIZE,
+        )
+        name_bbox = draw.textbbox((0, 0), name, font=name_font)
+        name_h = name_bbox[3] - name_bbox[1]
+        name_y = pad_y + max(0, (name_area_h - name_h) // 2) - name_bbox[1]
         draw.text(
-            (x + (im.width - tw) / 2, pad + (label_h - size) / 2),
+            (x + (im.width - name_w) / 2, name_y),
             name,
             fill=(20, 20, 20),
             font=name_font,
         )
-        y_card = pad + label_h
+
+        y_card = pad_y + name_area_h
         if im.mode == "RGBA":
             canvas.paste(im, (x, y_card), im)
         else:
             canvas.paste(im, (x, y_card))
-        # Score text: shrink only if needed to fit card width
-        score_font = font
-        sw = draw.textlength(score_text, font=score_font)
-        ssize = font_size
-        while sw > im.width - 12 and ssize > 80:
-            ssize -= 12
-            score_font = _font(ssize)
-            sw = draw.textlength(score_text, font=score_font)
-        draw.text(
-            (x + (im.width - sw) / 2, y_card + im.height + (score_h - ssize) / 2),
-            score_text,
-            fill=(20, 20, 20),
-            font=score_font,
+
+        # The score gets its own large line below "Score:". This avoids
+        # shrinking a 70-90px font just to fit "Score: 11" into 209px.
+        score_label = "Score:"
+        score_value = str(score)
+        score_label_font = _font(62)
+        score_value_font, score_w = _fit_font(
+            draw,
+            score_value,
+            max_width=max(1, im.width - 12),
+            start_size=SCORE_FONT_SIZE,
+            min_size=SCORE_MIN_FONT_SIZE,
         )
+
+        score_label_bbox = draw.textbbox((0, 0), score_label, font=score_label_font)
+        score_value_bbox = draw.textbbox((0, 0), score_value, font=score_value_font)
+        label_h = score_label_bbox[3] - score_label_bbox[1]
+        value_h = score_value_bbox[3] - score_value_bbox[1]
+        spacing = 4
+        block_h = label_h + spacing + value_h
+        score_top = y_card + im.height + max(0, (score_area_h - block_h) // 2)
+
+        label_w = draw.textlength(score_label, font=score_label_font)
+        draw.text(
+            (x + (im.width - label_w) / 2, score_top - score_label_bbox[1]),
+            score_label,
+            fill=(20, 20, 20),
+            font=score_label_font,
+        )
+
+        value_y = score_top + label_h + spacing - score_value_bbox[1]
+        draw.text(
+            (x + (im.width - score_w) / 2, value_y),
+            score_value,
+            fill=(20, 20, 20),
+            font=score_value_font,
+        )
+
         x += im.width + gap
 
     buf = BytesIO()
