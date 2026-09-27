@@ -91,19 +91,24 @@ def _leaderboard_html(rows) -> str:
     lines = ["<b>Tomochi Card Leaderboard</b>", ""]
     # Build list with ranks for "passed by lower-score player" checks.
     ranked = list(enumerate(rows, start=1))
+    top_score = int(rows[0]["score"]) if rows else 0
+    # Crown only when strictly alone at the top (at least 1 point ahead).
+    sole_leader = len(rows) == 1 or top_score > int(rows[1]["score"])
     for i, row in ranked:
         prev_rank = row["prev_rank"]
         prev_score = row["prev_score"]
         score = int(row["score"])
 
-        if i == 1:
-            prefix = "👑"
+        if i == 1 and sole_leader:
+            # Only crown when at least 1 point clear of everyone else.
+            # Tied top scores â "â"; still clear after a points loss â keep ð.
+            prefix = "ð"
         elif prev_rank is None:
             # First appearance on the board.
-            prefix = "—"
+            prefix = "â"
         elif i < prev_rank and prev_score is not None and score > int(prev_score):
             # Climbed by gaining points (not just reshuffled).
-            prefix = "⬆️"
+            prefix = "â¬ï¸"
         elif i > prev_rank and prev_score is not None:
             dropped_points = score < int(prev_score)
             # Someone who had strictly fewer points before is now above us.
@@ -114,12 +119,13 @@ def _leaderboard_html(rows) -> str:
                 if j < i
             )
             if dropped_points or passed_from_below:
-                prefix = "⬇️"
+                prefix = "â¬ï¸"
             else:
-                # Rank number fell only because peers left our tier — neutral.
-                prefix = "—"
+                # Rank number fell only because peers left our tier â neutral.
+                prefix = "â"
         else:
-            prefix = "—"
+            # Includes tied leaders (i==1 but not sole_leader) and unchanged ranks.
+            prefix = "â"
 
         who = mention(row["username"], row["first_name"], row["user_id"])
         lines.append(
@@ -325,7 +331,7 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
     result = f"{winner_tag} wins! {WIN_POINTS} points!"
     if joker:
         joker_tag = mention(joker["username"], joker["first_name"], joker["user_id"])
-        result += f"\n\n{joker_tag} Joker pulled -{JOKER_PENALTY} points 😭"
+        result += f"\n\n{joker_tag} Joker pulled -{JOKER_PENALTY} points ð­"
     await context.bot.send_message(
         chat_id,
         result,
