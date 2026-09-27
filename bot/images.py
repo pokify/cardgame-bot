@@ -53,8 +53,6 @@ def render_deal(players: list[dict]) -> BytesIO:
     """players: {username, first_name, user_id, card_key, score}"""
     card_target_h = 420
     gap = 24
-    label_h = 88
-    score_h = 88
     pad = 28
 
     cards: list[tuple[str, str, Image.Image]] = []
@@ -71,23 +69,32 @@ def render_deal(players: list[dict]) -> BytesIO:
             score = p.get("score", CARDS[p["card_key"]]["score"])
         cards.append((name, f"Score: {score}", raw.resize((w, card_target_h))))
 
+    min_card_w = min(im.width for _, _, im in cards)
+    # ~3.5x the old 56px cap so names survive Telegram shrinking a wide 4-card strip
+    font_size = max(140, min(220, int(min_card_w * 0.55)))
+    font = _font(font_size)
+    label_h = font_size + 48
+    score_h = font_size + 48
+
     total_w = pad * 2 + sum(im.width for _, _, im in cards) + gap * (len(cards) - 1)
     total_h = pad * 2 + label_h + card_target_h + score_h
     canvas = Image.new("RGB", (total_w, total_h), (248, 248, 248))
     draw = ImageDraw.Draw(canvas)
 
-    min_card_w = min(im.width for _, _, im in cards)
-    font_size = max(36, min(56, int(min_card_w * 0.16)))
-    font = _font(font_size)
-
     x = pad
     for name, score_text, im in cards:
-        tw = draw.textlength(name, font=font)
+        name_font = font
+        tw = draw.textlength(name, font=name_font)
+        size = font_size
+        while tw > im.width - 8 and size > 48:
+            size -= 8
+            name_font = _font(size)
+            tw = draw.textlength(name, font=name_font)
         draw.text(
-            (x + (im.width - tw) / 2, pad + (label_h - font_size) / 2),
+            (x + (im.width - tw) / 2, pad + (label_h - size) / 2),
             name,
             fill=(20, 20, 20),
-            font=font,
+            font=name_font,
         )
         y_card = pad + label_h
         if im.mode == "RGBA":
