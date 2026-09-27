@@ -28,6 +28,22 @@ log = logging.getLogger(__name__)
 BUMP_SECONDS = 30
 RESET_TIMEOUT = 10
 
+# Serialize lobby message updates for each game.  A join and a scheduled
+# lobby bump must never read/send/update the lobby concurrently, otherwise
+# the bump can overwrite a freshly joined player with a stale player list.
+_lobby_locks: dict[int, asyncio.Lock] = {}
+_lobby_locks_guard = asyncio.Lock()
+
+
+async def _lobby_lock(game_id: int) -> asyncio.Lock:
+    """Return the stable per-game lock used for lobby updates."""
+    async with _lobby_locks_guard:
+        lock = _lobby_locks.get(game_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _lobby_locks[game_id] = lock
+        return lock
+
 
 def _schedule_expire(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: int) -> None:
     jq = context.job_queue
@@ -72,7 +88,7 @@ async def _delete_quietly(bot, chat_id: int, message_id: int | None) -> None:
 def _leaderboard_html(rows) -> str:
     if not rows:
         return "No games yet. Start one with /cards."
-    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    medals = {1: "ð¥", 2: "ð¥", 3: "ð¥"}
     lines = ["<b>Tomochi Card Leaderboard</b>", ""]
     for i, row in enumerate(rows, start=1):
         prefix = medals.get(i, f"{i}.")
@@ -140,77 +156,99 @@ async def join_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await query.answer("This lobby is gone.", show_alert=True)
         return
 
-    ok, reason, players = await db.add_player(
-        game_id, user.id, user.username, user.first_name
-    )
-    if not ok:
-        alerts = {
-            "already_in": "You already joined.",
-            "full": "Lobby is full.",
-            "not_waiting": "This game already started.",
-            "not_found": "Lobby not found.",
-        }
-        await query.answer(alerts.get(reason, "Can't join."), show_alert=True)
-        return
+    lock = await _lobby_lock(game_id)
 
-    await query.answer()
-
-    if len(players) >= MAX_PLAYERS:
-        try:
-            await query.edit_message_reply_markup(reply_markup=None)
-        except Exception:
-            pass
-        await _run_game(context, game_id, chat.id)
-        return
-
-    text = lobby_text(players, game["flavor"])
-    markup = lobby_keyboard(game_id)
-
-    # Try editing the message the button came from
-    try:
-        await query.edit_message_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=markup,
-            disable_web_page_preview=True,
+    # Serialize the join with lobby bumps.  In particular, the bump must not
+    # read an old player list and replace the message after this join succeeds.
+    async with lock:
+        ok, reason, players = await db.add_player(
+            game_id, user.id, user.username, user.first_name
         )
-        return
-    except Exception as exp:
-        log.warning("Could not edit lobby via callback: %s", exp)
-
-    # Re-fetch so we have the latest message_id (bump may have replaced it)
-    fresh = await db.get_game(game_id)
-    mid = fresh["message_id"] if fresh else game["message_id"]
-
-    # Fallback: edit using the message_id stored in DB
-    if mid:
-        try:
-            await context.bot.edit_message_text(
-                chat_id=chat.id,
-                message_id=mid,
-                text=text,
-                parse_mode="HTML",
-                reply_markup=markup,
-                disable_web_page_preview=True,
-            )
+        if not ok:
+            alerts = {
+                "already_in": "You already joined.",
+                "full": "Lobby is full.",
+                "not_waiting": "This game already started.",
+                "not_found": "Lobby not found.",
+            }
+            await query.answer(alerts.get(reason, "Can't join."), show_alert=True)
             return
-        except Exception as exp:
-            log.warning("Could not edit lobby via stored message_id: %s", exp)
 
-    # Last resort: send a fresh lobby message and update the stored id
-    try:
-        msg = await context.bot.send_message(
-            chat.id,
-            text,
-            parse_mode="HTML",
-            reply_markup=markup,
-            disable_web_page_preview=True,
-        )
-        await db.set_message_id(game_id, msg.message_id)
-        if mid:
-            await _delete_quietly(context.bot, chat.id, mid)
-    except Exception as exp:
-        log.warning("Could not send replacement lobby: %s", exp)
+        await query.answer()
+
+        # Always build the visible lobby from the latest DB state while the
+        # lobby lock is held.
+        players = await db.list_players(game_id)
+
+        if len(players) >= MAX_PLAYERS:
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            # Run the game only after the lock is released.  The DB status
+            # check in _run_game prevents duplicate starts.
+            run_game = True
+        else:
+            run_game = False
+            text = lobby_text(players, game["flavor"])
+            markup = lobby_keyboard(game_id)
+
+            # The message that contained the clicked button may already have
+            # been replaced by a lobby bump.  Refresh the stored message_id
+            # while holding the same lock used by bump_lobby_job.
+            fresh = await db.get_game(game_id)
+            mid = fresh["message_id"] if fresh else game["message_id"]
+
+            edited = False
+
+            # Prefer the message the user actually clicked, but only if it is
+            # still the current lobby message.
+            if mid == query.message.message_id:
+                try:
+                    await query.edit_message_text(
+                        text,
+                        parse_mode="HTML",
+                        reply_markup=markup,
+                        disable_web_page_preview=True,
+                    )
+                    edited = True
+                except Exception as exp:
+                    log.warning("Could not edit lobby via callback: %s", exp)
+
+            # Otherwise edit the current message stored in the DB.
+            if not edited and mid:
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=chat.id,
+                        message_id=mid,
+                        text=text,
+                        parse_mode="HTML",
+                        reply_markup=markup,
+                        disable_web_page_preview=True,
+                    )
+                    edited = True
+                except Exception as exp:
+                    log.warning("Could not edit lobby via stored message_id: %s", exp)
+
+            # Last resort: create a replacement while still holding the lock,
+            # then update the DB pointer before deleting the old message.
+            if not edited:
+                try:
+                    msg = await context.bot.send_message(
+                        chat.id,
+                        text,
+                        parse_mode="HTML",
+                        reply_markup=markup,
+                        disable_web_page_preview=True,
+                    )
+                    await db.set_message_id(game_id, msg.message_id)
+                    if mid and mid != msg.message_id:
+                        await _delete_quietly(context.bot, chat.id, mid)
+                except Exception as exp:
+                    log.warning("Could not send replacement lobby: %s", exp)
+
+    if run_game:
+        await _run_game(context, game_id, chat.id)
 
 
 async def expire_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -255,7 +293,7 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
         disable_web_page_preview=True,
     )
 
-    await context.bot.send_message(chat_id, "Dealing…")
+    await context.bot.send_message(chat_id, "Dealingâ¦")
     await asyncio.sleep(5)
 
     assignments, winner, joker = deal(players)
@@ -266,7 +304,7 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
     result = f"{winner_tag} wins! {WIN_POINTS} points!"
     if joker:
         joker_tag = mention(joker["username"], joker["first_name"], joker["user_id"])
-        result += f"\n\n{joker_tag} Joker pulled -{JOKER_PENALTY} points 😭"
+        result += f"\n\n{joker_tag} Joker pulled -{JOKER_PENALTY} points ð­"
     await context.bot.send_message(
         chat_id,
         result,
@@ -346,24 +384,35 @@ async def bump_lobby_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     data = context.job.data or {}
     chat_id = data["chat_id"]
     game_id = data["game_id"]
-    game = await db.get_game(game_id)
-    if game is None or game["status"] != "waiting":
-        return
-    players = await db.list_players(game_id)
-    old_id = game["message_id"]
-    try:
-        msg = await context.bot.send_message(
-            chat_id,
-            lobby_text(players, game["flavor"]),
-            parse_mode="HTML",
-            reply_markup=lobby_keyboard(game_id),
-            disable_web_page_preview=True,
-        )
-    except Exception:
-        log.exception("Lobby bump failed")
-        return
-    await db.set_message_id(game_id, msg.message_id)
-    await _delete_quietly(context.bot, chat_id, old_id)
+
+    lock = await _lobby_lock(game_id)
+
+    # A bump and a Join Game operation share this lock.  This prevents a bump
+    # from reading a stale player list and replacing a newly updated lobby.
+    async with lock:
+        game = await db.get_game(game_id)
+        if game is None or game["status"] != "waiting":
+            return
+
+        # Re-read players while holding the lock, immediately before creating
+        # the replacement message.
+        players = await db.list_players(game_id)
+        old_id = game["message_id"]
+
+        try:
+            msg = await context.bot.send_message(
+                chat_id,
+                lobby_text(players, game["flavor"]),
+                parse_mode="HTML",
+                reply_markup=lobby_keyboard(game_id),
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            log.exception("Lobby bump failed")
+            return
+
+        await db.set_message_id(game_id, msg.message_id)
+        await _delete_quietly(context.bot, chat_id, old_id)
 
 
 async def resetlb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
