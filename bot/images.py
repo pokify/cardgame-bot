@@ -103,14 +103,17 @@ def load_card(card_key: str) -> Image.Image:
 
 
 def display_name(username: str | None, first_name: str | None, user_id: int) -> str:
-    # Keep the full name here. It is truncated later based on actual rendered
-    # pixel width, so wide characters do not unfairly consume the same
-    # allowance as narrow characters.
+    """Return the full display name; width-based truncation happens at render time."""
     if username:
-        return username
+        return str(username)
     if first_name:
-        return first_name
+        return str(first_name)
     return str(user_id)
+
+
+def _clean_display_name(text: str) -> str:
+    """Remove Unicode replacement characters without stripping normal Unicode."""
+    return text.replace("\ufffd", "").strip()
 
 
 def _truncate_to_width(
@@ -118,25 +121,25 @@ def _truncate_to_width(
     text: str,
     font: ImageFont.FreeTypeFont,
     max_width: int,
-) -> str:
-    """Truncate text with a single ellipsis so it fits max_width in pixels."""
+) -> tuple[str, float]:
+    """Truncate by rendered pixel width and append a real Unicode ellipsis."""
     if draw.textlength(text, font=font) <= max_width:
-        return text
+        return text, draw.textlength(text, font=font)
 
     ellipsis = "â¦"
     ellipsis_w = draw.textlength(ellipsis, font=font)
     if ellipsis_w > max_width:
-        return ellipsis
+        return ellipsis, ellipsis_w
 
-    # Remove characters from the end until the ellipsis version fits.
-    end = len(text)
-    while end > 0:
-        candidate = text[:end] + ellipsis
-        if draw.textlength(candidate, font=font) <= max_width:
-            return candidate
-        end -= 1
+    truncated = text
+    while truncated:
+        candidate = truncated[:-1] + ellipsis
+        width = draw.textlength(candidate, font=font)
+        if width <= max_width:
+            return candidate, width
+        truncated = truncated[:-1]
 
-    return ellipsis
+    return ellipsis, ellipsis_w
 
 
 def _scale_card(raw: Image.Image) -> Image.Image:
@@ -190,23 +193,24 @@ def render_deal(players: list[dict]) -> BytesIO:
 
     x = pad_x
     for name, score, im in cards:
-        # Keep names readable. At 209px card width, long names are truncated
-        # rather than shrinking to an unreadable font size.
-        name_max_width = max(1, im.width - 12)
-        # Keep the preferred username font size and truncate by pixel width
-        # instead of shrinking long usernames into tiny text.
+        # Keep the preferred username size. If it is too wide, truncate by
+        # rendered pixel width and append a real Unicode ellipsis instead of
+        # shrinking the username to an unreadable size.
+        name = _clean_display_name(name)
         name_font = _font(NAME_FONT_SIZE)
-        display_name_text = _truncate_to_width(
-            draw, name, name_font, name_max_width
+        name, name_w = _truncate_to_width(
+            draw,
+            name,
+            name_font,
+            max_width=max(1, im.width - 12),
         )
 
-        # Use the same fixed anchor point for every username. The previous
-        # bbox-based vertical calculation could make names with different
-        # letter shapes appear a few pixels higher/lower than their neighbours.
+        # Fixed username zone: every name is centred at exactly the same
+        # vertical position above its card, regardless of glyph shape.
         name_center_y = pad_y + name_area_h / 2
         draw.text(
             (x + im.width / 2, name_center_y),
-            display_name_text,
+            name,
             fill=(20, 20, 20),
             font=name_font,
             anchor="mm",
