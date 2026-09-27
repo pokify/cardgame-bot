@@ -103,7 +103,7 @@ def load_card(card_key: str) -> Image.Image:
 
 
 def display_name(username: str | None, first_name: str | None, user_id: int) -> str:
-    """Return the full display name; this diagnostic version does not truncate it."""
+    """Return the full display name; width-based truncation happens at render time."""
     if username:
         return str(username)
     if first_name:
@@ -114,6 +114,32 @@ def display_name(username: str | None, first_name: str | None, user_id: int) -> 
 def _clean_display_name(text: str) -> str:
     """Remove Unicode replacement characters without stripping normal Unicode."""
     return text.replace("\ufffd", "").strip()
+
+
+def _truncate_to_width(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    max_width: int,
+) -> tuple[str, float]:
+    """Truncate by rendered pixel width and append ASCII dots for maximum font/encoding compatibility."""
+    if draw.textlength(text, font=font) <= max_width:
+        return text, draw.textlength(text, font=font)
+
+    ellipsis = "..."
+    ellipsis_w = draw.textlength(ellipsis, font=font)
+    if ellipsis_w > max_width:
+        return ellipsis, ellipsis_w
+
+    truncated = text
+    while truncated:
+        candidate = truncated[:-1] + ellipsis
+        width = draw.textlength(candidate, font=font)
+        if width <= max_width:
+            return candidate, width
+        truncated = truncated[:-1]
+
+    return ellipsis, ellipsis_w
 
 
 def _scale_card(raw: Image.Image) -> Image.Image:
@@ -167,11 +193,17 @@ def render_deal(players: list[dict]) -> BytesIO:
 
     x = pad_x
     for name, score, im in cards:
-        # Diagnostic version: deliberately do NOT truncate usernames.
-        # This isolates whether the Unicode/symbol issue is being introduced
-        # by the truncation/ellipsis logic.
+        # Keep the preferred username size. If it is too wide, truncate by
+        # rendered pixel width and append ASCII dots instead of
+        # shrinking the username to an unreadable size.
         name = _clean_display_name(name)
         name_font = _font(NAME_FONT_SIZE)
+        name, name_w = _truncate_to_width(
+            draw,
+            name,
+            name_font,
+            max_width=max(1, im.width - 12),
+        )
 
         # Fixed username zone: every name is centred at exactly the same
         # vertical position above its card, regardless of glyph shape.
