@@ -9,13 +9,17 @@ from bot.config import CARDS, CARDS_DIR
 
 
 def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    for name in (
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
-    ):
-        if Path(name).exists():
-            return ImageFont.truetype(name, size)
+    # Prefer font bundled with the project (works on Railway / any host).
+    bundled = Path(__file__).resolve().parent.parent / "assets" / "fonts" / "DejaVuSans-Bold.ttf"
+    candidates = (
+        bundled,
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+        Path("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"),
+        Path("/usr/share/fonts/truetype/freefont/FreeSansBold.ttf"),
+    )
+    for name in candidates:
+        if name.exists():
+            return ImageFont.truetype(str(name), size)
     return ImageFont.load_default()
 
 

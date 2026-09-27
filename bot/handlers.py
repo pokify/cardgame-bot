@@ -178,8 +178,11 @@ async def join_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as exp:
         log.warning("Could not edit lobby via callback: %s", exp)
 
-    # Fallback: edit using the message_id stored in DB (survives bumps / stale callbacks)
-    mid = game["message_id"]
+    # Re-fetch so we have the latest message_id (bump may have replaced it)
+    fresh = await db.get_game(game_id)
+    mid = fresh["message_id"] if fresh else game["message_id"]
+
+    # Fallback: edit using the message_id stored in DB
     if mid:
         try:
             await context.bot.edit_message_text(
