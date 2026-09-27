@@ -18,8 +18,13 @@ def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
         Path("/usr/share/fonts/truetype/freefont/FreeSansBold.ttf"),
     )
     for name in candidates:
-        if name.exists():
+        if not name.exists():
+            continue
+        try:
             return ImageFont.truetype(str(name), size)
+        except OSError:
+            # Corrupt / wrong format file — try next candidate
+            continue
     return ImageFont.load_default()
 
 
