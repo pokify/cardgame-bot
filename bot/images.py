@@ -16,10 +16,10 @@ CARD_SCALE = 0.50
 
 # Typography is deliberately sized for the smaller composite image so Telegram
 # does not have to downscale a very wide 3-4 player image as aggressively.
-NAME_FONT_SIZE = 120
-NAME_MIN_FONT_SIZE = 88
-SCORE_FONT_SIZE = 80
-SCORE_MIN_FONT_SIZE = 70
+NAME_FONT_SIZE = 95
+NAME_MIN_FONT_SIZE = 75
+SCORE_FONT_SIZE = 65
+SCORE_MIN_FONT_SIZE = 55
 
 
 def _font(size: int) -> ImageFont.FreeTypeFont:
@@ -190,7 +190,7 @@ def render_deal(players: list[dict]) -> BytesIO:
         # shrinking a 70-90px font just to fit "Score: 11" into 209px.
         score_label = "Score:"
         score_value = str(score)
-        score_label_font = _font(62)
+        score_label_font = _font(52)
         score_value_font, score_w = _fit_font(
             draw,
             score_value,
