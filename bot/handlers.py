@@ -163,15 +163,51 @@ async def join_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _run_game(context, game_id, chat.id)
         return
 
+    text = lobby_text(players, game["flavor"])
+    markup = lobby_keyboard(game_id)
+
+    # Try editing the message the button came from
     try:
         await query.edit_message_text(
-            lobby_text(players, game["flavor"]),
+            text,
             parse_mode="HTML",
-            reply_markup=lobby_keyboard(game_id),
+            reply_markup=markup,
             disable_web_page_preview=True,
         )
-    except Exception as exc:
-        log.warning("Could not edit lobby: %s", exc)
+        return
+    except Exception as exp:
+        log.warning("Could not edit lobby via callback: %s", exp)
+
+    # Fallback: edit using the message_id stored in DB (survives bumps / stale callbacks)
+    mid = game["message_id"]
+    if mid:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat.id,
+                message_id=mid,
+                text=text,
+                parse_mode="HTML",
+                reply_markup=markup,
+                disable_web_page_preview=True,
+            )
+            return
+        except Exception as exp:
+            log.warning("Could not edit lobby via stored message_id: %s", exp)
+
+    # Last resort: send a fresh lobby message and update the stored id
+    try:
+        msg = await context.bot.send_message(
+            chat.id,
+            text,
+            parse_mode="HTML",
+            reply_markup=markup,
+            disable_web_page_preview=True,
+        )
+        await db.set_message_id(game_id, msg.message_id)
+        if mid:
+            await _delete_quietly(context.bot, chat.id, mid)
+    except Exception as exp:
+        log.warning("Could not send replacement lobby: %s", exp)
 
 
 async def expire_job(context: ContextTypes.DEFAULT_TYPE) -> None:
