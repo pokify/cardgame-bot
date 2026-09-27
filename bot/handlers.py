@@ -88,7 +88,7 @@ async def _delete_quietly(bot, chat_id: int, message_id: int | None) -> None:
 def _leaderboard_html(rows) -> str:
     if not rows:
         return "No games yet. Start one with /cards."
-    medals = {1: "ð¥", 2: "ð¥", 3: "ð¥"}
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
     lines = ["<b>Tomochi Card Leaderboard</b>", ""]
     for i, row in enumerate(rows, start=1):
         prefix = medals.get(i, f"{i}.")
@@ -285,7 +285,7 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
         disable_web_page_preview=True,
     )
 
-    await context.bot.send_message(chat_id, "Dealingâ¦")
+    await context.bot.send_message(chat_id, "Dealing...")
     await asyncio.sleep(5)
 
     assignments, winner, joker = deal(players)
