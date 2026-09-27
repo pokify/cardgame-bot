@@ -166,7 +166,10 @@ async def join_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         if not ok:
             alerts = {
-                "already_in": "You already joined.",
+                "already_in": (
+                    "Join successful. Other players have seen you have joined! "
+                    "Your user interface may not be showing it for you at this moment!"
+                ),
                 "full": "Lobby is full.",
                 "not_waiting": "This game already started.",
                 "not_found": "Lobby not found.",
@@ -199,23 +202,42 @@ async def join_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             fresh = await db.get_game(game_id)
             mid = fresh["message_id"] if fresh else game["message_id"]
 
-            # Diagnostic: deliberately send a completely new lobby message
-            # instead of editing the existing one. This isolates whether the
-            # intermittent mobile problem is caused by Telegram's handling of
-            # edit_message_text().
-            try:
-                msg = await context.bot.send_message(
-                    chat.id,
-                    text,
-                    parse_mode="HTML",
-                    reply_markup=markup,
-                    disable_web_page_preview=True,
-                )
-                await db.set_message_id(game_id, msg.message_id)
-                if mid and mid != msg.message_id:
-                    await _delete_quietly(context.bot, chat.id, mid)
-            except Exception as exp:
-                log.warning("Could not send replacement lobby: %s", exp)
+            # Edit the current lobby directly through the Bot API.  We do not
+            # use query.edit_message_text() here because the mobile client has
+            # intermittently shown a stale version of the edited callback
+            # message even though the database join succeeded.
+            #
+            # The current message_id comes from the DB, so this also handles a
+            # lobby that was bumped/replaced since the player tapped Join.
+            if mid:
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=chat.id,
+                        message_id=mid,
+                        text=text,
+                        parse_mode="HTML",
+                        reply_markup=markup,
+                        disable_web_page_preview=True,
+                    )
+                except Exception as exp:
+                    log.warning("Could not refresh lobby via Bot API: %s", exp)
+                    # Re-read the message pointer once and retry.  This avoids
+                    # creating a new group message just because the lobby was
+                    # replaced between our reads.
+                    fresh_retry = await db.get_game(game_id)
+                    retry_mid = fresh_retry["message_id"] if fresh_retry else None
+                    if retry_mid and retry_mid != mid:
+                        try:
+                            await context.bot.edit_message_text(
+                                chat_id=chat.id,
+                                message_id=retry_mid,
+                                text=text,
+                                parse_mode="HTML",
+                                reply_markup=markup,
+                                disable_web_page_preview=True,
+                            )
+                        except Exception:
+                            log.exception("Could not refresh lobby on retry")
 
     if run_game:
         await _run_game(context, game_id, chat.id)
@@ -317,8 +339,37 @@ async def showlb_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def group_activity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Diagnostic mode: temporarily disable lobby bumping."""
-    return
+    """If someone posts after the lobby, bump it to the bottom 30s later."""
+    message = update.effective_message
+    chat = update.effective_chat
+    if message is None or chat is None:
+        return
+    if chat.type not in ("group", "supergroup"):
+        return
+    user = update.effective_user
+    if user and user.is_bot:
+        return
+    text = message.text or message.caption or ""
+    if text.startswith("/"):
+        return
+
+    game = await db.active_game(chat.id)
+    if game is None or game["status"] != "waiting" or not game["message_id"]:
+        return
+    if message.message_id == game["message_id"]:
+        return
+
+    jq = context.job_queue
+    name = f"bump:{chat.id}"
+    for job in jq.get_jobs_by_name(name):
+        job.schedule_removal()
+    jq.run_once(
+        bump_lobby_job,
+        when=BUMP_SECONDS,
+        data={"chat_id": chat.id, "game_id": game["id"]},
+        name=name,
+        chat_id=chat.id,
+    )
 
 
 async def bump_lobby_job(context: ContextTypes.DEFAULT_TYPE) -> None:
