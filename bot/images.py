@@ -103,11 +103,40 @@ def load_card(card_key: str) -> Image.Image:
 
 
 def display_name(username: str | None, first_name: str | None, user_id: int) -> str:
+    # Keep the full name here. It is truncated later based on actual rendered
+    # pixel width, so wide characters do not unfairly consume the same
+    # allowance as narrow characters.
     if username:
-        return username[:18]
+        return username
     if first_name:
-        return first_name[:18]
+        return first_name
     return str(user_id)
+
+
+def _truncate_to_width(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    max_width: int,
+) -> str:
+    """Truncate text with a single ellipsis so it fits max_width in pixels."""
+    if draw.textlength(text, font=font) <= max_width:
+        return text
+
+    ellipsis = "â¦"
+    ellipsis_w = draw.textlength(ellipsis, font=font)
+    if ellipsis_w > max_width:
+        return ellipsis
+
+    # Remove characters from the end until the ellipsis version fits.
+    end = len(text)
+    while end > 0:
+        candidate = text[:end] + ellipsis
+        if draw.textlength(candidate, font=font) <= max_width:
+            return candidate
+        end -= 1
+
+    return ellipsis
 
 
 def _scale_card(raw: Image.Image) -> Image.Image:
@@ -163,21 +192,24 @@ def render_deal(players: list[dict]) -> BytesIO:
     for name, score, im in cards:
         # Keep names readable. At 209px card width, long names are truncated
         # rather than shrinking to an unreadable font size.
-        name_font, name_w = _fit_font(
-            draw,
-            name,
-            max_width=max(1, im.width - 12),
-            start_size=NAME_FONT_SIZE,
-            min_size=NAME_MIN_FONT_SIZE,
+        name_max_width = max(1, im.width - 12)
+        # Keep the preferred username font size and truncate by pixel width
+        # instead of shrinking long usernames into tiny text.
+        name_font = _font(NAME_FONT_SIZE)
+        display_name_text = _truncate_to_width(
+            draw, name, name_font, name_max_width
         )
-        name_bbox = draw.textbbox((0, 0), name, font=name_font)
-        name_h = name_bbox[3] - name_bbox[1]
-        name_y = pad_y + max(0, (name_area_h - name_h) // 2) - name_bbox[1]
+
+        # Use the same fixed anchor point for every username. The previous
+        # bbox-based vertical calculation could make names with different
+        # letter shapes appear a few pixels higher/lower than their neighbours.
+        name_center_y = pad_y + name_area_h / 2
         draw.text(
-            (x + (im.width - name_w) / 2, name_y),
-            name,
+            (x + im.width / 2, name_center_y),
+            display_name_text,
             fill=(20, 20, 20),
             font=name_font,
+            anchor="mm",
         )
 
         y_card = pad_y + name_area_h
@@ -203,7 +235,7 @@ def render_deal(players: list[dict]) -> BytesIO:
         score_value_bbox = draw.textbbox((0, 0), score_value, font=score_value_font)
         label_h = score_label_bbox[3] - score_label_bbox[1]
         value_h = score_value_bbox[3] - score_value_bbox[1]
-        spacing = 4
+        spacing = 10
         block_h = label_h + spacing + value_h
         score_top = y_card + im.height + max(0, (score_area_h - block_h) // 2)
 
