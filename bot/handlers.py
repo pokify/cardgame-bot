@@ -101,14 +101,14 @@ def _leaderboard_html(rows) -> str:
 
         if i == 1 and sole_leader:
             # Only crown when at least 1 point clear of everyone else.
-            # Tied top scores â "â"; still clear after a points loss â keep ð.
-            prefix = "ð"
+            # Tied top scores -> dash; still clear after a points loss -> keep crown.
+            prefix = "\U0001F451"  # crown
         elif prev_rank is None:
             # First appearance on the board.
-            prefix = "â"
+            prefix = "\u2014"  # em dash
         elif i < prev_rank and prev_score is not None and score > int(prev_score):
             # Climbed by gaining points (not just reshuffled).
-            prefix = "â¬ï¸"
+            prefix = "\u2B06\uFE0F"  # up arrow emoji
         elif i > prev_rank and prev_score is not None:
             dropped_points = score < int(prev_score)
             # Someone who had strictly fewer points before is now above us.
@@ -119,13 +119,13 @@ def _leaderboard_html(rows) -> str:
                 if j < i
             )
             if dropped_points or passed_from_below:
-                prefix = "â¬ï¸"
+                prefix = "\u2B07\uFE0F"  # down arrow emoji
             else:
-                # Rank number fell only because peers left our tier â neutral.
-                prefix = "â"
+                # Rank number fell only because peers left our tier - neutral.
+                prefix = "\u2014"  # em dash
         else:
             # Includes tied leaders (i==1 but not sole_leader) and unchanged ranks.
-            prefix = "â"
+            prefix = "\u2014"  # em dash
 
         who = mention(row["username"], row["first_name"], row["user_id"])
         lines.append(
