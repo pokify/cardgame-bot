@@ -112,7 +112,7 @@ def _leaderboard_html(rows) -> str:
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat.type == "private":
         await update.message.reply_text(
-            "Add me to a group, then use /cards to start a lobby and /lb for scores."
+            "Add me to a group, then use /cards to start a lobby and /cardslb for scores."
         )
         return
     await cards_cmd(update, context)
@@ -328,7 +328,7 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
 async def lb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
     if chat.type not in ("group", "supergroup"):
-        await update.message.reply_text("Use /lb in the group.")
+        await update.message.reply_text("Use /cardslb in the group.")
         return
     html = _leaderboard_html(await db.leaderboard(chat.id))
     await update.message.reply_html(html, disable_web_page_preview=True)

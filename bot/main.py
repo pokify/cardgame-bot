@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 
+from telegram import BotCommand
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -36,6 +37,13 @@ async def post_init(application: Application) -> None:
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is not set")
     await db.connect(DATABASE_URL)
+    await application.bot.set_my_commands(
+        [
+            BotCommand("cards", "Start Tomochi Cards"),
+            BotCommand("cardslb", "Show cards leaderboard"),
+            BotCommand("resetlb", "Reset cards leaderboard"),
+        ]
+    )
     await restore_jobs(application)
     log.info("Bot ready")
 
@@ -58,7 +66,7 @@ def main() -> None:
     )
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("cards", cards_cmd))
-    app.add_handler(CommandHandler("lb", lb_cmd))
+    app.add_handler(CommandHandler("cardslb", lb_cmd))
     app.add_handler(CommandHandler("resetlb", resetlb_cmd))
     app.add_handler(CallbackQueryHandler(join_cb, pattern=r"^join:\d+$"))
     app.add_handler(CallbackQueryHandler(showlb_cb, pattern=r"^showlb$"))
