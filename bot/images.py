@@ -51,15 +51,24 @@ def display_name(username: str | None, first_name: str | None, user_id: int) -> 
 
 def render_deal(players: list[dict]) -> BytesIO:
     """players: {username, first_name, user_id, card_key, score}"""
-    card_target_h = 420
-    gap = 24
-    pad = 28
+    # Keep cards near native resolution so they stay sharp (no upscaling).
+    # Typical source is ~418x579; we target height 560 max.
+    card_target_h = 560
+    gap = 36
+    pad = 40
 
     cards: list[tuple[str, str, Image.Image]] = []
     for p in players:
         raw = load_card(p["card_key"])
-        ratio = card_target_h / raw.height
-        w = max(1, int(raw.width * ratio))
+        # Scale down only if larger than target; never upscale.
+        if raw.height > card_target_h:
+            ratio = card_target_h / raw.height
+            w = max(1, int(raw.width * ratio))
+            h = card_target_h
+            im = raw.resize((w, h), Image.Resampling.LANCZOS)
+        else:
+            im = raw
+            w, h = im.size
         name = display_name(p.get("username"), p.get("first_name"), p["user_id"])
         if "display_score" in p:
             score = p["display_score"]
@@ -67,17 +76,19 @@ def render_deal(players: list[dict]) -> BytesIO:
             score = -5
         else:
             score = p.get("score", CARDS[p["card_key"]]["score"])
-        cards.append((name, f"Score: {score}", raw.resize((w, card_target_h))))
+        cards.append((name, f"Score: {score}", im))
 
     min_card_w = min(im.width for _, _, im in cards)
-    # ~3.5x the old 56px cap so names survive Telegram shrinking a wide 4-card strip
-    font_size = max(140, min(220, int(min_card_w * 0.55)))
+    # Large fonts so text survives Telegram's aggressive downscale.
+    font_size = max(260, min(400, int(min_card_w * 0.85)))
     font = _font(font_size)
-    label_h = font_size + 48
-    score_h = font_size + 48
+    # Generous vertical bands for names and scores
+    label_h = font_size + 100
+    score_h = font_size + 100
 
+    card_h = max(im.height for _, _, im in cards)
     total_w = pad * 2 + sum(im.width for _, _, im in cards) + gap * (len(cards) - 1)
-    total_h = pad * 2 + label_h + card_target_h + score_h
+    total_h = pad * 2 + label_h + card_h + score_h
     canvas = Image.new("RGB", (total_w, total_h), (248, 248, 248))
     draw = ImageDraw.Draw(canvas)
 
@@ -86,8 +97,8 @@ def render_deal(players: list[dict]) -> BytesIO:
         name_font = font
         tw = draw.textlength(name, font=name_font)
         size = font_size
-        while tw > im.width - 8 and size > 48:
-            size -= 8
+        while tw > im.width - 12 and size > 80:
+            size -= 12
             name_font = _font(size)
             tw = draw.textlength(name, font=name_font)
         draw.text(
@@ -101,12 +112,19 @@ def render_deal(players: list[dict]) -> BytesIO:
             canvas.paste(im, (x, y_card), im)
         else:
             canvas.paste(im, (x, y_card))
-        sw = draw.textlength(score_text, font=font)
+        # Score text: shrink only if needed to fit card width
+        score_font = font
+        sw = draw.textlength(score_text, font=score_font)
+        ssize = font_size
+        while sw > im.width - 12 and ssize > 80:
+            ssize -= 12
+            score_font = _font(ssize)
+            sw = draw.textlength(score_text, font=score_font)
         draw.text(
-            (x + (im.width - sw) / 2, y_card + im.height + (score_h - font_size) / 2),
+            (x + (im.width - sw) / 2, y_card + im.height + (score_h - ssize) / 2),
             score_text,
             fill=(20, 20, 20),
-            font=font,
+            font=score_font,
         )
         x += im.width + gap
 
