@@ -70,6 +70,7 @@ async def init_schema() -> None:
                 played          INTEGER NOT NULL DEFAULT 0,
                 wins            INTEGER NOT NULL DEFAULT 0,
                 prev_rank       INTEGER,
+                prev_score      INTEGER,
                 PRIMARY KEY (chat_id, user_id)
             );
             """
@@ -79,6 +80,9 @@ async def init_schema() -> None:
         )
         await conn.execute(
             "ALTER TABLE player_stats ADD COLUMN IF NOT EXISTS prev_rank INTEGER"
+        )
+        await conn.execute(
+            "ALTER TABLE player_stats ADD COLUMN IF NOT EXISTS prev_score INTEGER"
         )
 
 
@@ -119,7 +123,8 @@ async def caller_standing(chat_id: int, user_id: int) -> dict:
         """
         SELECT user_id FROM player_stats
         WHERE chat_id = $1
-        ORDER BY score DESC, wins DESC, played ASC
+        ORDER BY score DESC, wins DESC, played ASC,
+                 COALESCE(prev_rank, 2147483647) ASC, user_id ASC
         """,
         chat_id,
     )
@@ -233,13 +238,13 @@ async def bump_stats(
 ) -> None:
     async with pool().acquire() as conn:
         async with conn.transaction():
-            # Snapshot ranks before this game's score changes so the next
-            # leaderboard view can show ⬆️ / ⬇️ movement.
+            # Snapshot ranks + scores before this game's changes so the next
+            # leaderboard can show meaningful ⬆️ / ⬇️ (not tier reshuffles).
             pre_rows = await conn.fetch(
                 """
-                SELECT user_id,
+                SELECT user_id, score,
                        ROW_NUMBER() OVER (
-                           ORDER BY score DESC, wins DESC, played ASC
+                           ORDER BY score DESC, wins DESC, played ASC, user_id ASC
                        ) AS rank
                 FROM player_stats
                 WHERE chat_id = $1
@@ -247,6 +252,7 @@ async def bump_stats(
                 chat_id,
             )
             old_ranks = {r["user_id"]: int(r["rank"]) for r in pre_rows}
+            old_scores = {r["user_id"]: int(r["score"]) for r in pre_rows}
 
             for p in players:
                 uid = p["user_id"]
@@ -277,9 +283,8 @@ async def bump_stats(
                     1 if is_win else 0,
                 )
 
-            # Store pre-game ranks for every player on the board (including
-            # those who did not play this round — their rank can still shift).
-            # New players have no old rank → NULL → shown as "—" until next game.
+            # Store pre-game rank + score for every player on the board.
+            # New players have no history → NULL → shown as "—" until next game.
             all_stats = await conn.fetch(
                 "SELECT user_id FROM player_stats WHERE chat_id = $1",
                 chat_id,
@@ -289,21 +294,25 @@ async def bump_stats(
                 await conn.execute(
                     """
                     UPDATE player_stats
-                    SET prev_rank = $3
+                    SET prev_rank = $3, prev_score = $4
                     WHERE chat_id = $1 AND user_id = $2
                     """,
                     chat_id,
                     uid,
                     old_ranks.get(uid),
+                    old_scores.get(uid),
                 )
 
 
 async def leaderboard(chat_id: int, limit: int = 15) -> list[asyncpg.Record]:
+    # When scores/wins/played tie, keep the previous higher rank above climbers
+    # (incumbent stays ahead of someone who only just tied them).
     return await pool().fetch(
         """
         SELECT * FROM player_stats
         WHERE chat_id = $1
-        ORDER BY score DESC, wins DESC, played ASC
+        ORDER BY score DESC, wins DESC, played ASC,
+                 COALESCE(prev_rank, 2147483647) ASC, user_id ASC
         LIMIT $2
         """,
         chat_id,

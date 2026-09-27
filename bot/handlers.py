@@ -89,18 +89,38 @@ def _leaderboard_html(rows) -> str:
     if not rows:
         return "No games yet. Start one with /cards."
     lines = ["<b>Tomochi Card Leaderboard</b>", ""]
-    for i, row in enumerate(rows, start=1):
-        prev = row["prev_rank"]  # None on first appearance
+    # Build list with ranks for "passed by lower-score player" checks.
+    ranked = list(enumerate(rows, start=1))
+    for i, row in ranked:
+        prev_rank = row["prev_rank"]
+        prev_score = row["prev_score"]
+        score = int(row["score"])
+
         if i == 1:
             prefix = "👑"
-        elif prev is None:
+        elif prev_rank is None:
+            # First appearance on the board.
             prefix = "—"
-        elif i < prev:
+        elif i < prev_rank and prev_score is not None and score > int(prev_score):
+            # Climbed by gaining points (not just reshuffled).
             prefix = "⬆️"
-        elif i > prev:
-            prefix = "⬇️"
+        elif i > prev_rank and prev_score is not None:
+            dropped_points = score < int(prev_score)
+            # Someone who had strictly fewer points before is now above us.
+            passed_from_below = any(
+                other["prev_score"] is not None
+                and int(other["prev_score"]) < int(prev_score)
+                for j, other in ranked
+                if j < i
+            )
+            if dropped_points or passed_from_below:
+                prefix = "⬇️"
+            else:
+                # Rank number fell only because peers left our tier — neutral.
+                prefix = "—"
         else:
             prefix = "—"
+
         who = mention(row["username"], row["first_name"], row["user_id"])
         lines.append(
             f"{prefix} {who}\n"
