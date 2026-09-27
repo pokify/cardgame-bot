@@ -88,10 +88,19 @@ async def _delete_quietly(bot, chat_id: int, message_id: int | None) -> None:
 def _leaderboard_html(rows) -> str:
     if not rows:
         return "No games yet. Start one with /cards."
-    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
     lines = ["<b>Tomochi Card Leaderboard</b>", ""]
     for i, row in enumerate(rows, start=1):
-        prefix = medals.get(i, f"{i}.")
+        prev = row["prev_rank"]  # None on first appearance
+        if i == 1:
+            prefix = "👑"
+        elif prev is None:
+            prefix = "—"
+        elif i < prev:
+            prefix = "⬆️"
+        elif i > prev:
+            prefix = "⬇️"
+        else:
+            prefix = "—"
         who = mention(row["username"], row["first_name"], row["user_id"])
         lines.append(
             f"{prefix} {who}\n"

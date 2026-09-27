@@ -69,12 +69,16 @@ async def init_schema() -> None:
                 score           INTEGER NOT NULL DEFAULT 0,
                 played          INTEGER NOT NULL DEFAULT 0,
                 wins            INTEGER NOT NULL DEFAULT 0,
+                prev_rank       INTEGER,
                 PRIMARY KEY (chat_id, user_id)
             );
             """
         )
         await conn.execute(
             "ALTER TABLE games ADD COLUMN IF NOT EXISTS flavor TEXT"
+        )
+        await conn.execute(
+            "ALTER TABLE player_stats ADD COLUMN IF NOT EXISTS prev_rank INTEGER"
         )
 
 
@@ -229,6 +233,21 @@ async def bump_stats(
 ) -> None:
     async with pool().acquire() as conn:
         async with conn.transaction():
+            # Snapshot ranks before this game's score changes so the next
+            # leaderboard view can show ⬆️ / ⬇️ movement.
+            pre_rows = await conn.fetch(
+                """
+                SELECT user_id,
+                       ROW_NUMBER() OVER (
+                           ORDER BY score DESC, wins DESC, played ASC
+                       ) AS rank
+                FROM player_stats
+                WHERE chat_id = $1
+                """,
+                chat_id,
+            )
+            old_ranks = {r["user_id"]: int(r["rank"]) for r in pre_rows}
+
             for p in players:
                 uid = p["user_id"]
                 is_win = uid == winner_user_id
@@ -256,6 +275,26 @@ async def bump_stats(
                     p["first_name"],
                     delta,
                     1 if is_win else 0,
+                )
+
+            # Store pre-game ranks for every player on the board (including
+            # those who did not play this round — their rank can still shift).
+            # New players have no old rank → NULL → shown as "—" until next game.
+            all_stats = await conn.fetch(
+                "SELECT user_id FROM player_stats WHERE chat_id = $1",
+                chat_id,
+            )
+            for r in all_stats:
+                uid = r["user_id"]
+                await conn.execute(
+                    """
+                    UPDATE player_stats
+                    SET prev_rank = $3
+                    WHERE chat_id = $1 AND user_id = $2
+                    """,
+                    chat_id,
+                    uid,
+                    old_ranks.get(uid),
                 )
 
 
