@@ -23,7 +23,7 @@ from bot.game import (
     reset_keyboard,
     winner_keyboard,
 )
-from bot.images import render_deal
+from bot.images import render_deal, render_leaderboard
 
 log = logging.getLogger(__name__)
 
@@ -537,20 +537,26 @@ async def lb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if chat.type not in ("group", "supergroup"):
         await update.message.reply_text("Use /cardslb in the group.")
         return
-    html = _leaderboard_html(await db.leaderboard(chat.id))
-    await update.message.reply_html(html, disable_web_page_preview=True)
+    rows = await db.leaderboard(chat.id)
+    if not rows:
+        await update.message.reply_text("No games yet. Start one with /cards.")
+        return
+    await update.message.reply_photo(
+        photo=render_leaderboard(rows),
+    )
 
 
 async def showlb_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     chat = query.message.chat
-    html = _leaderboard_html(await db.leaderboard(chat.id))
-    await context.bot.send_message(
+    rows = await db.leaderboard(chat.id)
+    if not rows:
+        await context.bot.send_message(chat.id, "No games yet. Start one with /cards.")
+        return
+    await context.bot.send_photo(
         chat.id,
-        html,
-        parse_mode="HTML",
-        disable_web_page_preview=True,
+        photo=render_leaderboard(rows),
     )
 
 
