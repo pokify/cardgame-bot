@@ -46,9 +46,23 @@ def player_line(players: list) -> str:
     return ", ".join(parts) if parts else "—"
 
 
-def lobby_keyboard(game_id: int) -> InlineKeyboardMarkup:
+def lobby_keyboard(game_id: int, house_available: bool = True) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton("Join Game", callback_data=f"join:{game_id}")]
+    ]
+    if house_available:
+        rows.append(
+            [InlineKeyboardButton("Challenge The House", callback_data=f"house:{game_id}")]
+        )
+    return InlineKeyboardMarkup(rows)
+
+
+def house_confirm_keyboard(game_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Join Game", callback_data=f"join:{game_id}")]]
+        [[
+            InlineKeyboardButton("Continue", callback_data=f"house_continue:{game_id}"),
+            InlineKeyboardButton("Cancel", callback_data=f"house_cancel:{game_id}"),
+        ]]
     )
 
 
@@ -90,6 +104,36 @@ def lobby_text(players: list, flavor: str | None = None) -> str:
         f"{MIN_PLAYERS} minimum\n\n"
         f"Players: {player_line(players)}"
     )
+
+
+def deal_house(player: dict) -> tuple[list[dict], dict, dict]:
+    """Deal one non-Joker card to the player and one non-Joker card to the House."""
+    keys = random.sample([key for key in CARDS if key != "joker"], 2)
+    player_key, house_key = keys
+
+    assignments = [
+        {
+            "user_id": player["user_id"],
+            "username": player["username"],
+            "first_name": player["first_name"],
+            "card_key": player_key,
+            "score": CARDS[player_key]["score"],
+            "display_score": CARDS[player_key]["score"],
+            "label": CARDS[player_key]["label"],
+        },
+        {
+            "user_id": 0,
+            "username": "The House",
+            "first_name": None,
+            "card_key": house_key,
+            "score": CARDS[house_key]["score"],
+            "display_score": CARDS[house_key]["score"],
+            "label": CARDS[house_key]["label"],
+        },
+    ]
+
+    winner = assignments[0] if assignments[0]["score"] > assignments[1]["score"] else assignments[1]
+    return assignments, winner, assignments[1]
 
 
 def deal(players: list) -> tuple[list[dict], dict, dict | None]:

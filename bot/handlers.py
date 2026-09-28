@@ -13,7 +13,9 @@ from bot.config import AUTO_INTERVAL_SECONDS, GAME_CHAT_IDS, LOBBY_SECONDS, MAX_
 from bot.game import (
     JOKER_PENALTY,
     deal,
+    deal_house,
     expires_at,
+    house_confirm_keyboard,
     lobby_keyboard,
     lobby_text,
     mention,
@@ -229,7 +231,7 @@ async def join_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         else:
             run_game = False
             text = lobby_text(players, game["flavor"])
-            markup = lobby_keyboard(game_id)
+            markup = lobby_keyboard(game_id, house_available=len(players) <= 1)
 
             # The message that contained the clicked button may already have
             # been replaced by a lobby bump.  Refresh the stored message_id
@@ -276,6 +278,215 @@ async def join_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if run_game:
         await _run_game(context, game_id, chat.id)
+
+
+
+HOUSE_CONFIRM_TIMEOUT = 30
+
+
+def _house_confirm_text(user) -> str:
+    who = mention(user.username, user.first_name, user.id)
+    return (
+        f"You can challenge the House twice a day as {who}.\n\n"
+        "Wins/Losses will not go to leaderboard."
+    )
+
+
+async def house_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show the House challenge confirmation for the game caller."""
+    query = update.callback_query
+    user = query.from_user
+    chat = query.message.chat
+
+    try:
+        game_id = int(query.data.split(":", 1)[1])
+    except (IndexError, ValueError):
+        await query.answer()
+        return
+
+    game = await db.get_game(game_id)
+    if game is None or game["chat_id"] != chat.id:
+        await query.answer("This lobby is gone.", show_alert=True)
+        return
+
+    if game["status"] != "waiting":
+        await query.answer("This game has already started.", show_alert=True)
+        return
+
+    players = await db.list_players(game_id)
+
+    if len(players) > 1:
+        await query.answer(
+            "Can not challenge house once another player has joined.",
+            show_alert=True,
+        )
+        return
+
+    if not players or players[0]["user_id"] != user.id:
+        await query.answer(
+            "Only game caller can challenge the House.",
+            show_alert=True,
+        )
+        return
+
+    used = await db.house_challenges_used(chat.id, user.id)
+    if used >= 2:
+        await query.answer(
+            "You have already used both House challenges today.",
+            show_alert=True,
+        )
+        return
+
+    await query.answer()
+
+    prompt = await context.bot.send_message(
+        chat.id,
+        _house_confirm_text(user),
+        parse_mode="HTML",
+        reply_markup=house_confirm_keyboard(game_id),
+        disable_web_page_preview=True,
+    )
+
+    # Remove abandoned confirmation prompts automatically.
+    jq = context.job_queue
+    jq.run_once(
+        house_prompt_timeout_job,
+        when=HOUSE_CONFIRM_TIMEOUT,
+        data={"chat_id": chat.id, "message_id": prompt.message_id},
+        name=f"house_prompt:{prompt.message_id}",
+        chat_id=chat.id,
+    )
+
+
+async def house_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    for job in context.job_queue.get_jobs_by_name(
+        f"house_prompt:{query.message.message_id}"
+    ):
+        job.schedule_removal()
+    await _delete_quietly(
+        context.bot, query.message.chat.id, query.message.message_id
+    )
+
+
+async def house_continue_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    user = query.from_user
+    chat = query.message.chat
+
+    try:
+        game_id = int(query.data.split(":", 1)[1])
+    except (IndexError, ValueError):
+        await query.answer()
+        return
+
+    game = await db.get_game(game_id)
+    if game is None or game["chat_id"] != chat.id:
+        await query.answer("This lobby is gone.", show_alert=True)
+        return
+
+    if game["status"] != "waiting":
+        await query.answer("This game has already started.", show_alert=True)
+        return
+
+    players = await db.list_players(game_id)
+
+    if len(players) > 1:
+        await query.answer(
+            "Can not challenge house once another player has joined.",
+            show_alert=True,
+        )
+        return
+
+    if not players or players[0]["user_id"] != user.id:
+        await query.answer(
+            "Only game caller can challenge the House.",
+            show_alert=True,
+        )
+        return
+
+    # Consume the daily attempt only when Continue is actually pressed.
+    consumed, _remaining = await db.consume_house_challenge(chat.id, user.id)
+    if not consumed:
+        await query.answer(
+            "You have already used both House challenges today.",
+            show_alert=True,
+        )
+        return
+
+    await query.answer()
+    for job in context.job_queue.get_jobs_by_name(
+        f"house_prompt:{query.message.message_id}"
+    ):
+        job.schedule_removal()
+    await _delete_quietly(
+        context.bot, chat.id, query.message.message_id
+    )
+
+    await _run_house_challenge(context, game_id, chat.id, user.id)
+
+
+async def house_prompt_timeout_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    data = context.job.data or {}
+    await _delete_quietly(
+        context.bot, data.get("chat_id"), data.get("message_id")
+    )
+
+
+async def _run_house_challenge(
+    context: ContextTypes.DEFAULT_TYPE,
+    game_id: int,
+    chat_id: int,
+    user_id: int,
+) -> None:
+    game = await db.get_game(game_id)
+    if game is None or game["status"] != "waiting":
+        return
+
+    players = await db.list_players(game_id)
+    if len(players) != 1 or players[0]["user_id"] != user_id:
+        return
+
+    await db.set_status(game_id, "running")
+    _cancel_chat_jobs(context, chat_id, game_id)
+
+    if game["message_id"]:
+        await _delete_quietly(context.bot, chat_id, game["message_id"])
+
+    await context.bot.send_message(chat_id, "Dealing...")
+    await asyncio.sleep(5)
+
+    player = players[0]
+    assignments, winner, _house = deal_house(player)
+
+    photo = render_deal(assignments)
+    await context.bot.send_photo(
+        chat_id,
+        photo=InputFile(photo, filename="house_challenge.png"),
+    )
+
+    player_tag = mention(
+        player["username"], player["first_name"], player["user_id"]
+    )
+
+    if winner["user_id"] == player["user_id"]:
+        result = f"{player_tag} highest score, you win! 😤\n\nHouse will get you next time!"
+    else:
+        result = (
+            f"{player_tag} you lose! Never bet against the House! "
+            "Better luck next time! 😗"
+        )
+
+    await context.bot.send_message(
+        chat_id,
+        result,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
+    # House challenge results intentionally never touch the leaderboard.
+    await db.set_status(game_id, "finished")
 
 
 async def expire_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -431,7 +642,7 @@ async def bump_lobby_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 chat_id,
                 lobby_text(players, game["flavor"]),
                 parse_mode="HTML",
-                reply_markup=lobby_keyboard(game_id),
+                reply_markup=lobby_keyboard(game_id, house_available=len(players) <= 1),
                 disable_web_page_preview=True,
             )
         except Exception:

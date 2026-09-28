@@ -84,6 +84,17 @@ async def init_schema() -> None:
         await conn.execute(
             "ALTER TABLE player_stats ADD COLUMN IF NOT EXISTS prev_score INTEGER"
         )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS house_challenges (
+                chat_id         BIGINT NOT NULL,
+                user_id         BIGINT NOT NULL,
+                challenge_date  DATE NOT NULL,
+                attempts        INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (chat_id, user_id, challenge_date)
+            )
+            """
+        )
 
 
 async def active_game(chat_id: int) -> asyncpg.Record | None:
@@ -345,3 +356,40 @@ async def reset_group(chat_id: int) -> list[asyncpg.Record]:
                 chat_id,
             )
             return list(games)
+
+
+async def house_challenges_used(chat_id: int, user_id: int) -> int:
+    row = await pool().fetchrow(
+        """
+        SELECT attempts
+        FROM house_challenges
+        WHERE chat_id = $1
+          AND user_id = $2
+          AND challenge_date = CURRENT_DATE
+        """,
+        chat_id,
+        user_id,
+    )
+    return int(row["attempts"]) if row else 0
+
+
+async def consume_house_challenge(chat_id: int, user_id: int) -> tuple[bool, int]:
+    """Atomically consume one of today's two House challenges for this user."""
+    row = await pool().fetchrow(
+        """
+        INSERT INTO house_challenges
+            (chat_id, user_id, challenge_date, attempts)
+        VALUES ($1, $2, CURRENT_DATE, 1)
+        ON CONFLICT (chat_id, user_id, challenge_date)
+        DO UPDATE SET attempts = house_challenges.attempts + 1
+        WHERE house_challenges.attempts < 2
+        RETURNING attempts
+        """,
+        chat_id,
+        user_id,
+    )
+    if row is None:
+        return False, 0
+
+    attempts = int(row["attempts"])
+    return True, 2 - attempts
