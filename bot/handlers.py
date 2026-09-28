@@ -281,19 +281,53 @@ async def join_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 
-HOUSE_CONFIRM_TIMEOUT = 30
+HOUSE_CONFIRM_TIMEOUT = 300
+
+# First click on Challenge The House shows a private Telegram alert. The
+# second click by the same user confirms the challenge and starts the game.
+# The pending state is deliberately tied to both the game and user so nobody
+# else can complete another user's confirmation.
+_house_confirmed_clicks: dict[tuple[int, int], float] = {}
+
+
+def _house_display_name(user) -> str:
+    if user.username:
+        return f"@{user.username}"
+    return user.first_name or "player"
 
 
 def _house_confirm_text(user) -> str:
-    who = mention(user.username, user.first_name, user.id)
+    who = _house_display_name(user)
     return (
-        f"You can challenge the House twice a day as {who}.\n\n"
-        "Wins/Losses will not go to leaderboard."
+        f"You can challenge the House twice a day as {who}. "
+        "Wins/Losses will not go to leaderboard. "
+        "Click Challenge the House to continue."
+    )
+
+
+async def _house_cooldown_text(user, used: int) -> str:
+    """Return the remaining time until the database's CURRENT_DATE resets."""
+    row = await db.pool().fetchrow(
+        """
+        SELECT (
+            date_trunc('day', CURRENT_TIMESTAMP) + INTERVAL '1 day'
+            - CURRENT_TIMESTAMP
+        ) AS remaining
+        """
+    )
+    remaining = row["remaining"]
+    total_seconds = max(0, int(remaining.total_seconds()))
+    hours, rem = divmod(total_seconds, 3600)
+    minutes = rem // 60
+    who = _house_display_name(user)
+    return (
+        f"You have used your twice-a-day House Challenge! "
+        f"You {who} can challenge house again in {hours} hours and {minutes} minutes."
     )
 
 
 async def house_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send the House challenge confirmation privately to the caller."""
+    """First click shows a private alert; second click by that same user starts."""
     query = update.callback_query
     user = query.from_user
     group_chat = query.message.chat
@@ -331,119 +365,35 @@ async def house_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     used = await db.house_challenges_used(group_chat.id, user.id)
     if used >= 2:
+        _house_confirmed_clicks.pop((game_id, user.id), None)
         await query.answer(
-            "You have already used both House challenges today.",
+            await _house_cooldown_text(user, used),
             show_alert=True,
         )
         return
 
-    try:
-        # Telegram does not allow an inline-keyboard alert, so the private
-        # Continue/Cancel confirmation is sent to the caller's private chat.
-        prompt = await context.bot.send_message(
-            chat_id=user.id,
-            text=_house_confirm_text(user),
-            parse_mode="HTML",
-            reply_markup=house_confirm_keyboard(game_id),
-            disable_web_page_preview=True,
-        )
-    except Exception:
-        # Bots cannot start a private chat with a user who has never opened
-        # them. Keep the group UI private in that case and tell the caller
-        # exactly what is required before trying again.
-        await query.answer(
-            "Please open a private chat with the bot and press Start first, "
-            "then try Challenge The House again.",
-            show_alert=True,
-        )
+    key = (game_id, user.id)
+    now_ts = datetime.now(timezone.utc).timestamp()
+    confirmed_at = _house_confirmed_clicks.get(key)
+    if confirmed_at is None or now_ts - confirmed_at > HOUSE_CONFIRM_TIMEOUT:
+        _house_confirmed_clicks[key] = now_ts
+        await query.answer(_house_confirm_text(user), show_alert=True)
         return
 
-    await query.answer()
-
-    jq = context.job_queue
-    jq.run_once(
-        house_prompt_timeout_job,
-        when=HOUSE_CONFIRM_TIMEOUT,
-        data={"chat_id": user.id, "message_id": prompt.message_id},
-        name=f"house_prompt:{prompt.message_id}",
-        chat_id=user.id,
-    )
-
-
-async def house_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    for job in context.job_queue.get_jobs_by_name(
-        f"house_prompt:{query.message.message_id}"
-    ):
-        job.schedule_removal()
-    await _delete_quietly(
-        context.bot, query.message.chat.id, query.message.message_id
-    )
-
-
-async def house_continue_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    user = query.from_user
-
-    try:
-        game_id = int(query.data.split(":", 1)[1])
-    except (IndexError, ValueError):
-        await query.answer()
-        return
-
-    game = await db.get_game(game_id)
-    if game is None:
-        await query.answer("This lobby is gone.", show_alert=True)
-        return
-
-    group_chat_id = game["chat_id"]
-
-    if game["status"] != "waiting":
-        await query.answer("This game has already started.", show_alert=True)
-        return
-
-    players = await db.list_players(game_id)
-
-    if len(players) > 1:
-        await query.answer(
-            "Can not challenge house once another player has joined.",
-            show_alert=True,
-        )
-        return
-
-    if not players or players[0]["user_id"] != user.id:
-        await query.answer(
-            "Only game caller can challenge the House.",
-            show_alert=True,
-        )
-        return
-
-    consumed, _remaining = await db.consume_house_challenge(group_chat_id, user.id)
+    # The second click is the confirmation. Re-check the daily limit and then
+    # atomically consume one of the two available challenges before starting.
+    consumed, _remaining = await db.consume_house_challenge(group_chat.id, user.id)
     if not consumed:
+        _house_confirmed_clicks.pop(key, None)
         await query.answer(
-            "You have already used both House challenges today.",
+            await _house_cooldown_text(user, 2),
             show_alert=True,
         )
         return
 
+    _house_confirmed_clicks.pop(key, None)
     await query.answer()
-    for job in context.job_queue.get_jobs_by_name(
-        f"house_prompt:{query.message.message_id}"
-    ):
-        job.schedule_removal()
-    await _delete_quietly(
-        context.bot, query.message.chat.id, query.message.message_id
-    )
-
-    await _run_house_challenge(context, game_id, group_chat_id, user.id)
-
-
-async def house_prompt_timeout_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    data = context.job.data or {}
-    await _delete_quietly(
-        context.bot, data.get("chat_id"), data.get("message_id")
-    )
+    await _run_house_challenge(context, game_id, group_chat.id, user.id)
 
 
 async def _run_house_challenge(

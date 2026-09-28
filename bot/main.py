@@ -19,8 +19,6 @@ from bot.handlers import (
     group_activity,
     join_cb,
     house_cb,
-    house_cancel_cb,
-    house_continue_cb,
     lb_cmd,
     resetlb_cb,
     resetlb_cmd,
@@ -77,8 +75,6 @@ def main() -> None:
     app.add_handler(CommandHandler("resetlb", resetlb_cmd))
     app.add_handler(CallbackQueryHandler(join_cb, pattern=r"^join:\d+$"))
     app.add_handler(CallbackQueryHandler(house_cb, pattern=r"^house:\d+$"))
-    app.add_handler(CallbackQueryHandler(house_continue_cb, pattern=r"^house_continue:\d+$"))
-    app.add_handler(CallbackQueryHandler(house_cancel_cb, pattern=r"^house_cancel:\d+$"))
     app.add_handler(CallbackQueryHandler(showlb_cb, pattern=r"^showlb$"))
     app.add_handler(CallbackQueryHandler(resetlb_cb, pattern=r"^resetlb:(yes|no)$"))
     app.add_handler(
