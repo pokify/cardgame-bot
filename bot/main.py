@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 
-from telegram import BotCommand
+from telegram import BotCommand, BotCommandScopeAllPrivateChats
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -40,12 +40,16 @@ async def post_init(application: Application) -> None:
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is not set")
     await db.connect(DATABASE_URL)
+    # Keep the command menu available in private chats.  In group chats
+    # Telegram clients may render bot commands with @botusername appended;
+    # /cards itself is still handled normally in groups when typed as /cards.
     await application.bot.set_my_commands(
         [
             BotCommand("cards", "Start Tomochi Cards"),
             BotCommand("cardslb", "Show cards leaderboard"),
             BotCommand("resetlb", "Reset cards leaderboard"),
-        ]
+        ],
+        scope=BotCommandScopeAllPrivateChats(),
     )
     await restore_jobs(application)
     log.info("Bot ready")

@@ -123,7 +123,7 @@ def deal_house(player: dict) -> tuple[list[dict], dict, dict]:
         },
         {
             "user_id": 0,
-            "username": "The House",
+            "username": "House",
             "first_name": None,
             "card_key": house_key,
             "score": CARDS[house_key]["score"],

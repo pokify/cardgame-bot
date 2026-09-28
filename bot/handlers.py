@@ -293,10 +293,10 @@ def _house_confirm_text(user) -> str:
 
 
 async def house_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show the House challenge confirmation for the game caller."""
+    """Send the House challenge confirmation privately to the caller."""
     query = update.callback_query
     user = query.from_user
-    chat = query.message.chat
+    group_chat = query.message.chat
 
     try:
         game_id = int(query.data.split(":", 1)[1])
@@ -305,7 +305,7 @@ async def house_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     game = await db.get_game(game_id)
-    if game is None or game["chat_id"] != chat.id:
+    if game is None or game["chat_id"] != group_chat.id:
         await query.answer("This lobby is gone.", show_alert=True)
         return
 
@@ -329,7 +329,7 @@ async def house_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    used = await db.house_challenges_used(chat.id, user.id)
+    used = await db.house_challenges_used(group_chat.id, user.id)
     if used >= 2:
         await query.answer(
             "You have already used both House challenges today.",
@@ -337,24 +337,36 @@ async def house_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
+    try:
+        # Telegram does not allow an inline-keyboard alert, so the private
+        # Continue/Cancel confirmation is sent to the caller's private chat.
+        prompt = await context.bot.send_message(
+            chat_id=user.id,
+            text=_house_confirm_text(user),
+            parse_mode="HTML",
+            reply_markup=house_confirm_keyboard(game_id),
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        # Bots cannot start a private chat with a user who has never opened
+        # them. Keep the group UI private in that case and tell the caller
+        # exactly what is required before trying again.
+        await query.answer(
+            "Please open a private chat with the bot and press Start first, "
+            "then try Challenge The House again.",
+            show_alert=True,
+        )
+        return
+
     await query.answer()
 
-    prompt = await context.bot.send_message(
-        chat.id,
-        _house_confirm_text(user),
-        parse_mode="HTML",
-        reply_markup=house_confirm_keyboard(game_id),
-        disable_web_page_preview=True,
-    )
-
-    # Remove abandoned confirmation prompts automatically.
     jq = context.job_queue
     jq.run_once(
         house_prompt_timeout_job,
         when=HOUSE_CONFIRM_TIMEOUT,
-        data={"chat_id": chat.id, "message_id": prompt.message_id},
+        data={"chat_id": user.id, "message_id": prompt.message_id},
         name=f"house_prompt:{prompt.message_id}",
-        chat_id=chat.id,
+        chat_id=user.id,
     )
 
 
@@ -373,7 +385,6 @@ async def house_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def house_continue_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     user = query.from_user
-    chat = query.message.chat
 
     try:
         game_id = int(query.data.split(":", 1)[1])
@@ -382,9 +393,11 @@ async def house_continue_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     game = await db.get_game(game_id)
-    if game is None or game["chat_id"] != chat.id:
+    if game is None:
         await query.answer("This lobby is gone.", show_alert=True)
         return
+
+    group_chat_id = game["chat_id"]
 
     if game["status"] != "waiting":
         await query.answer("This game has already started.", show_alert=True)
@@ -406,8 +419,7 @@ async def house_continue_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return
 
-    # Consume the daily attempt only when Continue is actually pressed.
-    consumed, _remaining = await db.consume_house_challenge(chat.id, user.id)
+    consumed, _remaining = await db.consume_house_challenge(group_chat_id, user.id)
     if not consumed:
         await query.answer(
             "You have already used both House challenges today.",
@@ -421,10 +433,10 @@ async def house_continue_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     ):
         job.schedule_removal()
     await _delete_quietly(
-        context.bot, chat.id, query.message.message_id
+        context.bot, query.message.chat.id, query.message.message_id
     )
 
-    await _run_house_challenge(context, game_id, chat.id, user.id)
+    await _run_house_challenge(context, game_id, group_chat_id, user.id)
 
 
 async def house_prompt_timeout_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -454,20 +466,28 @@ async def _run_house_challenge(
     if game["message_id"]:
         await _delete_quietly(context.bot, chat_id, game["message_id"])
 
+    player = players[0]
+    player_tag = mention(
+        player["username"], player["first_name"], player["user_id"]
+    )
+
+    # This announcement is intentionally permanent and visible to everyone.
+    await context.bot.send_message(
+        chat_id,
+        f"{player_tag} has challenged the house! ⚔️",
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
     await context.bot.send_message(chat_id, "Dealing...")
     await asyncio.sleep(5)
 
-    player = players[0]
     assignments, winner, _house = deal_house(player)
 
     photo = render_deal(assignments)
     await context.bot.send_photo(
         chat_id,
         photo=InputFile(photo, filename="house_challenge.png"),
-    )
-
-    player_tag = mention(
-        player["username"], player["first_name"], player["user_id"]
     )
 
     if winner["user_id"] == player["user_id"]:
