@@ -331,7 +331,7 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
     result = f"{winner_tag} wins! {WIN_POINTS} points!"
     if joker:
         joker_tag = mention(joker["username"], joker["first_name"], joker["user_id"])
-        result += f"\n\n{joker_tag} Joker pulled -{JOKER_PENALTY} points 😭"
+        result += f"\n\n{joker_tag} Joker pulled -{JOKER_PENALTY} points \U0001F62D"
     await context.bot.send_message(
         chat_id,
         result,
