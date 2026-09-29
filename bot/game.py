@@ -97,7 +97,7 @@ def lobby_text(players: list, flavor: str | None = None) -> str:
     n = len(players)
     flavor_block = f"{flavor}\n\n" if flavor else ""
     return (
-        "<b>Tomochi Card!</b>\n\n"
+        "<b>New deck has started!</b>\n\n"
         f"{flavor_block}"
         "Highest Tomochi card wins!\n\n"
         f"Waiting for players… ({n}/{MAX_PLAYERS})\n"
