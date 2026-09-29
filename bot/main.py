@@ -50,8 +50,8 @@ async def post_init(application: Application) -> None:
     ]
     group_commands = [
         BotCommand("cards", "Start Tomochi Cards"),
-        BotCommand("cancelcards", "Cancel current game (admin)"),
-        BotCommand("infinitycards", "Toggle House challenge limit (admin)"),
+        BotCommand("cancelcards", "Cancel new game (admin)"),
+        BotCommand("infinitycards", "house limit on/off"),
         BotCommand("cardslb", "Show cards leaderboard"),
         BotCommand("resetlb", "Reset cards leaderboard"),
     ]
