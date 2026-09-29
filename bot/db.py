@@ -95,6 +95,14 @@ async def init_schema() -> None:
             )
             """
         )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS house_settings (
+                chat_id          BIGINT PRIMARY KEY,
+                limit_enabled    BOOLEAN NOT NULL DEFAULT TRUE
+            )
+            """
+        )
 
 
 async def active_game(chat_id: int) -> asyncpg.Record | None:
@@ -393,3 +401,26 @@ async def consume_house_challenge(chat_id: int, user_id: int) -> tuple[bool, int
 
     attempts = int(row["attempts"])
     return True, 2 - attempts
+
+
+async def house_limit_enabled(chat_id: int) -> bool:
+    row = await pool().fetchrow(
+        "SELECT limit_enabled FROM house_settings WHERE chat_id = $1",
+        chat_id,
+    )
+    return bool(row["limit_enabled"]) if row else True
+
+
+async def toggle_house_limit(chat_id: int) -> bool:
+    """Toggle the group House Challenge daily limit. Returns the new state."""
+    row = await pool().fetchrow(
+        """
+        INSERT INTO house_settings (chat_id, limit_enabled)
+        VALUES ($1, FALSE)
+        ON CONFLICT (chat_id)
+        DO UPDATE SET limit_enabled = NOT house_settings.limit_enabled
+        RETURNING limit_enabled
+        """,
+        chat_id,
+    )
+    return bool(row["limit_enabled"])

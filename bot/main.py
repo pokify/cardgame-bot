@@ -16,9 +16,11 @@ from bot import db
 from bot.config import BOT_TOKEN, DATABASE_URL
 from bot.handlers import (
     cards_cmd,
+    cancelcards_cmd,
     group_activity,
     join_cb,
     house_cb,
+    infinitycards_cmd,
     lb_cmd,
     resetlb_cb,
     resetlb_cmd,
@@ -71,6 +73,8 @@ def main() -> None:
     )
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("cards", cards_cmd))
+    app.add_handler(CommandHandler("cancelcards", cancelcards_cmd))
+    app.add_handler(CommandHandler("infinitycards", infinitycards_cmd))
     app.add_handler(CommandHandler("cardslb", lb_cmd))
     app.add_handler(CommandHandler("resetlb", resetlb_cmd))
     app.add_handler(CallbackQueryHandler(join_cb, pattern=r"^join:\d+$"))

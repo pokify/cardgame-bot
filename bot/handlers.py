@@ -363,6 +363,15 @@ async def house_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
+    # When the group-wide daily limit is disabled, the game caller can start
+    # the House challenge immediately on the first click. No daily challenge
+    # is consumed while the restriction is off.
+    if not await db.house_limit_enabled(group_chat.id):
+        _house_confirmed_clicks.pop((game_id, user.id), None)
+        await query.answer()
+        await _run_house_challenge(context, game_id, group_chat.id, user.id)
+        return
+
     used = await db.house_challenges_used(group_chat.id, user.id)
     if used >= 2:
         _house_confirmed_clicks.pop((game_id, user.id), None)
@@ -530,6 +539,51 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
         joker["user_id"] if joker else None,
         JOKER_PENALTY,
     )
+
+
+async def cancelcards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Cancel the current waiting lobby. Admins only."""
+    chat = update.effective_chat
+    user = update.effective_user
+    message = update.effective_message
+    if chat.type not in ("group", "supergroup"):
+        return
+
+    if not await _is_admin(context, chat.id, user.id):
+        await _delete_quietly(context.bot, chat.id, message.message_id if message else None)
+        return
+
+    game = await db.active_game(chat.id)
+    if game is None or game["status"] != "waiting":
+        await _delete_quietly(context.bot, chat.id, message.message_id if message else None)
+        await context.bot.send_message(chat.id, "There is no game waiting to be cancelled.")
+        return
+
+    await db.set_status(game["id"], "expired")
+    _cancel_chat_jobs(context, chat.id, game["id"])
+    await _delete_quietly(context.bot, chat.id, game["message_id"])
+    await _delete_quietly(context.bot, chat.id, message.message_id if message else None)
+    await context.bot.send_message(chat.id, "Current game cancelled by an admin.")
+
+
+async def infinitycards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Toggle the daily House Challenge limit. Admins only."""
+    chat = update.effective_chat
+    user = update.effective_user
+    message = update.effective_message
+    if chat.type not in ("group", "supergroup"):
+        return
+
+    if not await _is_admin(context, chat.id, user.id):
+        await _delete_quietly(context.bot, chat.id, message.message_id if message else None)
+        return
+
+    enabled = await db.toggle_house_limit(chat.id)
+    await _delete_quietly(context.bot, chat.id, message.message_id if message else None)
+    if enabled:
+        await context.bot.send_message(chat.id, "House Challenge twice-a-day restriction is back on.")
+    else:
+        await context.bot.send_message(chat.id, "House Challenge twice-a-day restriction is now off. Game callers can challenge the House without the daily limit.")
 
 
 async def lb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
