@@ -36,11 +36,11 @@ CARDS: dict[str, dict] = {
     "pip8": {"file": "pip8.png", "label": "8", "score": 8},
     "pip9": {"file": "pip9.png", "label": "9", "score": 9},
     "pip10": {"file": "pip10.png", "label": "10", "score": 10},
-    "ace": {"file": "ace.png", "label": "Ace", "score": 11},
-    "jack": {"file": "jack.png", "label": "Jack", "score": 12},
+    "jack": {"file": "jack.png", "label": "Jack", "score": 11},
+    "queen": {"file": "queen.png", "label": "Queen", "score": 12},
     "king": {"file": "king.png", "label": "King", "score": 13},
-    "queen": {"file": "queen.png", "label": "Queen", "score": 14},
-    "joker": {"file": "joker.png", "label": "Joker", "score": 15},
+    "ace": {"file": "ace.png", "label": "Ace", "score": 14},
+    "joker": {"file": "joker.png", "label": "Joker", "score": -5},
 }
 
 
