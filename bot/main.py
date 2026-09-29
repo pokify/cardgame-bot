@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 
-from telegram import BotCommand, BotCommandScopeAllPrivateChats
+from telegram import BotCommand, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -43,13 +43,25 @@ async def post_init(application: Application) -> None:
     # Keep the command menu available in private chats.  In group chats
     # Telegram clients may render bot commands with @botusername appended;
     # /cards itself is still handled normally in groups when typed as /cards.
+    private_commands = [
+        BotCommand("cards", "Start Tomochi Cards"),
+        BotCommand("cardslb", "Show cards leaderboard"),
+        BotCommand("resetlb", "Reset cards leaderboard"),
+    ]
+    group_commands = [
+        BotCommand("cards", "Start Tomochi Cards"),
+        BotCommand("cancelcards", "Cancel current game (admin)"),
+        BotCommand("infinitycards", "Toggle House challenge limit (admin)"),
+        BotCommand("cardslb", "Show cards leaderboard"),
+        BotCommand("resetlb", "Reset cards leaderboard"),
+    ]
     await application.bot.set_my_commands(
-        [
-            BotCommand("cards", "Start Tomochi Cards"),
-            BotCommand("cardslb", "Show cards leaderboard"),
-            BotCommand("resetlb", "Reset cards leaderboard"),
-        ],
+        private_commands,
         scope=BotCommandScopeAllPrivateChats(),
+    )
+    await application.bot.set_my_commands(
+        group_commands,
+        scope=BotCommandScopeAllGroupChats(),
     )
     await restore_jobs(application)
     log.info("Bot ready")
@@ -88,7 +100,7 @@ def main() -> None:
         ),
         group=1,
     )
-    log.info("Polling…")
+    log.info("Pollingâ¦")
     app.run_polling(allowed_updates=["message", "callback_query"])
 
 
