@@ -19,6 +19,7 @@ from bot.game import (
     lobby_keyboard,
     lobby_text,
     mention,
+    house_result_keyboard,
     pick_flavor,
     reset_keyboard,
     winner_keyboard,
@@ -169,9 +170,10 @@ async def cards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Could not create the lobby. Try again.")
         return
 
+    house_on = await db.house_enabled(chat.id)
     msg = await update.message.reply_html(
         lobby_text(players, game["flavor"]),
-        reply_markup=lobby_keyboard(game["id"]),
+        reply_markup=lobby_keyboard(game["id"], house_available=house_on),
         disable_web_page_preview=True,
     )
     await db.set_message_id(game["id"], msg.message_id)
@@ -231,7 +233,8 @@ async def join_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         else:
             run_game = False
             text = lobby_text(players, game["flavor"])
-            markup = lobby_keyboard(game_id, house_available=len(players) <= 1)
+            house_on = await db.house_enabled(chat.id)
+            markup = lobby_keyboard(game_id, house_available=house_on and len(players) <= 1)
 
             # The message that contained the clicked button may already have
             # been replaced by a lobby bump.  Refresh the stored message_id
@@ -296,11 +299,14 @@ def _house_display_name(user) -> str:
     return user.first_name or "player"
 
 
-def _house_confirm_text(user) -> str:
+def _house_confirm_text(user, max_plays: int | None) -> str:
     who = _house_display_name(user)
+    if max_plays is None:
+        limit = "with no daily limit"
+    else:
+        limit = f"up to {max_plays} time(s) a day"
     return (
-        f"You can challenge the House twice a day as {who}. "
-        "Wins/Losses will not go to leaderboard. "
+        f"You can challenge the House {limit} as {who}. "
         "Click Challenge the House to continue."
     )
 
@@ -321,7 +327,7 @@ async def _house_cooldown_text(user, used: int) -> str:
     minutes = rem // 60
     who = _house_display_name(user)
     return (
-        f"You have used your twice-a-day House Challenge! "
+        f"You have used your House Challenge limit for today! "
         f"You {who} can challenge house again in {hours} hours and {minutes} minutes."
     )
 
@@ -363,17 +369,20 @@ async def house_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    # When the group-wide daily limit is disabled, the game caller can start
-    # the House challenge immediately on the first click. No daily challenge
-    # is consumed while the restriction is off.
-    if not await db.house_limit_enabled(group_chat.id):
+    settings = await db.get_house_settings(group_chat.id)
+    if not settings["house_enabled"]:
+        await query.answer("House challenges are disabled in this group.", show_alert=True)
+        return
+
+    max_plays = settings["max_plays_per_day"]
+    if max_plays is None:
         _house_confirmed_clicks.pop((game_id, user.id), None)
         await query.answer()
         await _run_house_challenge(context, game_id, group_chat.id, user.id)
         return
 
     used = await db.house_challenges_used(group_chat.id, user.id)
-    if used >= 2:
+    if used >= max_plays:
         _house_confirmed_clicks.pop((game_id, user.id), None)
         await query.answer(
             await _house_cooldown_text(user, used),
@@ -386,16 +395,16 @@ async def house_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     confirmed_at = _house_confirmed_clicks.get(key)
     if confirmed_at is None or now_ts - confirmed_at > HOUSE_CONFIRM_TIMEOUT:
         _house_confirmed_clicks[key] = now_ts
-        await query.answer(_house_confirm_text(user), show_alert=True)
+        await query.answer(_house_confirm_text(user, max_plays), show_alert=True)
         return
 
-    # The second click is the confirmation. Re-check the daily limit and then
-    # atomically consume one of the two available challenges before starting.
-    consumed, _remaining = await db.consume_house_challenge(group_chat.id, user.id)
+    consumed, _remaining = await db.consume_house_challenge(
+        group_chat.id, user.id, max_plays
+    )
     if not consumed:
         _house_confirmed_clicks.pop(key, None)
         await query.answer(
-            await _house_cooldown_text(user, 2),
+            await _house_cooldown_text(user, max_plays),
             show_alert=True,
         )
         return
@@ -441,7 +450,9 @@ async def _run_house_challenge(
     await context.bot.send_message(chat_id, "Dealing...")
     await asyncio.sleep(5)
 
-    assignments, winner, _house = deal_house(player)
+    banned = await db.banned_cards(chat_id, "house")
+    assignments, winner, _house = deal_house(player, banned)
+    await db.record_deal_memory(chat_id, "house", [a["card_key"] for a in assignments])
 
     photo = render_deal(assignments)
     await context.bot.send_photo(
@@ -449,7 +460,8 @@ async def _run_house_challenge(
         photo=InputFile(photo, filename="house_challenge.png"),
     )
 
-    if winner["user_id"] == player["user_id"]:
+    player_won = winner["user_id"] == player["user_id"]
+    if player_won:
         result = f"{player_tag} highest score, you win! 😤\n\nHouse will get you next time!"
     else:
         result = (
@@ -461,10 +473,11 @@ async def _run_house_challenge(
         chat_id,
         result,
         parse_mode="HTML",
+        reply_markup=house_result_keyboard(),
         disable_web_page_preview=True,
     )
 
-    # House challenge results intentionally never touch the leaderboard.
+    await db.bump_house_stats(chat_id, player, player_won)
     await db.set_status(game_id, "finished")
 
 
@@ -513,7 +526,10 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
     await context.bot.send_message(chat_id, "Dealing...")
     await asyncio.sleep(5)
 
-    assignments, winner, joker = deal(players)
+    banned = await db.banned_cards(chat_id, "pvp2") if len(players) == 2 else []
+    assignments, winner, joker = deal(players, banned)
+    if len(players) == 2:
+        await db.record_deal_memory(chat_id, "pvp2", [a["card_key"] for a in assignments])
     photo = render_deal(assignments)
     await context.bot.send_photo(chat_id, photo=InputFile(photo, filename="deal.png"))
 
@@ -566,24 +582,147 @@ async def cancelcards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await context.bot.send_message(chat.id, "Current game cancelled by an admin.")
 
 
-async def infinitycards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Toggle the daily House Challenge limit. Admins only."""
+_house_cfg_draft: dict[int, dict] = {}
+
+
+def _house_cfg_text(draft: dict) -> str:
+    plays = draft.get("max_plays_per_day")
+    plays_label = "No limit" if plays is None else str(plays)
+    state = "enabled" if draft.get("house_enabled") else "disabled"
+    return (
+        "<b>House Config</b>\n\n"
+        f"House is currently {state}.\n"
+        f"User max plays per day: {plays_label}\n\n"
+        "Telegram has no number box on buttons — use + / − or No limit, then Save."
+    )
+
+
+def _house_cfg_keyboard(draft: dict):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    toggle = "Enable House" if not draft.get("house_enabled") else "Disable House"
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(toggle, callback_data="hc:toggle")],
+            [
+                InlineKeyboardButton("−", callback_data="hc:minus"),
+                InlineKeyboardButton("No limit", callback_data="hc:nolimit"),
+                InlineKeyboardButton("+", callback_data="hc:plus"),
+            ],
+            [InlineKeyboardButton("Save", callback_data="hc:save")],
+        ]
+    )
+
+
+def _house_lb_html(rows) -> str:
+    if not rows:
+        return "No House games yet."
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    lines = ["<b>House Leaderboard</b>", ""]
+    for i, row in enumerate(rows, start=1):
+        prefix = medals.get(i, f"{i}.")
+        who = mention(row["username"], row["first_name"], row["user_id"])
+        lines.append(
+            f"{prefix} {who}\n"
+            f"Wins: {row['wins']} | Losses: {row['losses']} | Played: {row['played']}"
+        )
+    return "\n".join(lines)
+
+
+async def houselb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if chat.type not in ("group", "supergroup"):
+        await update.message.reply_text("Use /houselb in the group.")
+        return
+    html = _house_lb_html(await db.house_leaderboard(chat.id))
+    await update.message.reply_html(html, disable_web_page_preview=True)
+
+
+async def showhouselb_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    chat = query.message.chat
+    html = _house_lb_html(await db.house_leaderboard(chat.id))
+    await context.bot.send_message(
+        chat.id, html, parse_mode="HTML", disable_web_page_preview=True
+    )
+
+
+async def resethouse_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
     user = update.effective_user
     message = update.effective_message
     if chat.type not in ("group", "supergroup"):
         return
+    await _delete_quietly(context.bot, chat.id, message.message_id if message else None)
+    if not await _is_admin(context, chat.id, user.id):
+        return
+    await db.reset_house_stats(chat.id)
+    await context.bot.send_message(chat.id, "House Leaderboard Reset!")
 
+
+async def houseconfig_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    message = update.effective_message
+    if chat.type not in ("group", "supergroup"):
+        return
     if not await _is_admin(context, chat.id, user.id):
         await _delete_quietly(context.bot, chat.id, message.message_id if message else None)
         return
+    settings = await db.get_house_settings(chat.id)
+    _house_cfg_draft[chat.id] = {
+        "house_enabled": settings["house_enabled"],
+        "max_plays_per_day": settings["max_plays_per_day"],
+    }
+    await context.bot.send_message(
+        chat.id,
+        _house_cfg_text(_house_cfg_draft[chat.id]),
+        parse_mode="HTML",
+        reply_markup=_house_cfg_keyboard(_house_cfg_draft[chat.id]),
+    )
 
-    enabled = await db.toggle_house_limit(chat.id)
-    await _delete_quietly(context.bot, chat.id, message.message_id if message else None)
-    if enabled:
-        await context.bot.send_message(chat.id, "House Challenge twice-a-day restriction is back on.")
-    else:
-        await context.bot.send_message(chat.id, "House Challenge twice-a-day restriction is now off. Game callers can challenge the House without the daily limit.")
+
+async def houseconfig_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    chat = query.message.chat
+    user = query.from_user
+    if not await _is_admin(context, chat.id, user.id):
+        await query.answer("Admins only.", show_alert=True)
+        return
+    draft = _house_cfg_draft.setdefault(
+        chat.id, {"house_enabled": True, "max_plays_per_day": None}
+    )
+    action = query.data.split(":", 1)[1]
+    if action == "toggle":
+        draft["house_enabled"] = not draft["house_enabled"]
+    elif action == "plus":
+        current = draft.get("max_plays_per_day")
+        draft["max_plays_per_day"] = 1 if current is None else min(20, current + 1)
+    elif action == "minus":
+        current = draft.get("max_plays_per_day")
+        if current is None or current <= 1:
+            draft["max_plays_per_day"] = None
+        else:
+            draft["max_plays_per_day"] = current - 1
+    elif action == "nolimit":
+        draft["max_plays_per_day"] = None
+    elif action == "save":
+        await db.save_house_settings(
+            chat.id, draft["house_enabled"], draft.get("max_plays_per_day")
+        )
+        await query.answer("Saved.")
+        await query.edit_message_text(
+            "House config saved.",
+            reply_markup=None,
+        )
+        return
+    await query.answer()
+    await query.edit_message_text(
+        _house_cfg_text(draft),
+        parse_mode="HTML",
+        reply_markup=_house_cfg_keyboard(draft),
+    )
 
 
 async def lb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -666,7 +805,10 @@ async def bump_lobby_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 chat_id,
                 lobby_text(players, game["flavor"]),
                 parse_mode="HTML",
-                reply_markup=lobby_keyboard(game_id, house_available=len(players) <= 1),
+                reply_markup=lobby_keyboard(
+                    game_id,
+                    house_available=(await db.house_enabled(chat_id)) and len(players) <= 1,
+                ),
                 disable_web_page_preview=True,
             )
         except Exception:
@@ -754,7 +896,7 @@ async def _open_auto_lobby(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> 
         chat_id,
         lobby_text([], game["flavor"]),
         parse_mode="HTML",
-        reply_markup=lobby_keyboard(game["id"]),
+        reply_markup=lobby_keyboard(game["id"], house_available=await db.house_enabled(chat_id)),
         disable_web_page_preview=True,
     )
     await db.set_message_id(game["id"], msg.message_id)

@@ -72,6 +72,12 @@ def winner_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def house_result_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("House Leaderboard", callback_data="showhouselb")]]
+    )
+
+
 def reset_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
@@ -106,9 +112,13 @@ def lobby_text(players: list, flavor: str | None = None) -> str:
     )
 
 
-def deal_house(player: dict) -> tuple[list[dict], dict, dict]:
+def deal_house(player: dict, banned: list[str] | None = None) -> tuple[list[dict], dict, dict]:
     """Deal one non-Joker card to the player and one non-Joker card to the House."""
-    keys = random.sample([key for key in CARDS if key != "joker"], 2)
+    banned_set = set(banned or [])
+    pool = [key for key in CARDS if key != "joker" and key not in banned_set]
+    if len(pool) < 2:
+        pool = [key for key in CARDS if key != "joker"]
+    keys = random.sample(pool, 2)
     player_key, house_key = keys
 
     assignments = [
@@ -136,8 +146,12 @@ def deal_house(player: dict) -> tuple[list[dict], dict, dict]:
     return assignments, winner, assignments[1]
 
 
-def deal(players: list) -> tuple[list[dict], dict, dict | None]:
-    keys = random.sample(list(CARDS.keys()), len(players))
+def deal(players: list, banned: list[str] | None = None) -> tuple[list[dict], dict, dict | None]:
+    banned_set = set(banned or [])
+    pool = [key for key in CARDS if key not in banned_set]
+    if len(pool) < len(players):
+        pool = list(CARDS.keys())
+    keys = random.sample(pool, len(players))
     assignments = []
     for player, key in zip(players, keys):
         face = CARDS[key]["score"]

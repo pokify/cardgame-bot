@@ -18,13 +18,17 @@ from bot.handlers import (
     cards_cmd,
     cancelcards_cmd,
     group_activity,
-    join_cb,
     house_cb,
-    infinitycards_cmd,
+    houseconfig_cb,
+    houseconfig_cmd,
+    houselb_cmd,
+    join_cb,
     lb_cmd,
     resetlb_cb,
     resetlb_cmd,
+    resethouse_cmd,
     restore_jobs,
+    showhouselb_cb,
     showlb_cb,
     start_cmd,
 )
@@ -40,20 +44,19 @@ async def post_init(application: Application) -> None:
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is not set")
     await db.connect(DATABASE_URL)
-    # Keep the command menu available in private chats.  In group chats
-    # Telegram clients may render bot commands with @botusername appended;
-    # /cards itself is still handled normally in groups when typed as /cards.
     private_commands = [
         BotCommand("cards", "Start Tomochi Cards"),
         BotCommand("cardslb", "Show cards leaderboard"),
-        BotCommand("resetlb", "Reset cards leaderboard"),
+        BotCommand("houselb", "Show house leaderboard"),
     ]
     group_commands = [
         BotCommand("cards", "Start Tomochi Cards"),
         BotCommand("cancelcards", "Cancel new game (admin)"),
-        BotCommand("infinitycards", "house limit on/off"),
         BotCommand("cardslb", "Show cards leaderboard"),
+        BotCommand("houselb", "Show house leaderboard"),
         BotCommand("resetlb", "Reset cards leaderboard"),
+        BotCommand("resethouse", "Reset house leaderboard"),
+        BotCommand("houseconfig", "Configure house"),
     ]
     await application.bot.set_my_commands(
         private_commands,
@@ -86,13 +89,17 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("cards", cards_cmd))
     app.add_handler(CommandHandler("cancelcards", cancelcards_cmd))
-    app.add_handler(CommandHandler("infinitycards", infinitycards_cmd))
     app.add_handler(CommandHandler("cardslb", lb_cmd))
+    app.add_handler(CommandHandler("houselb", houselb_cmd))
     app.add_handler(CommandHandler("resetlb", resetlb_cmd))
+    app.add_handler(CommandHandler("resethouse", resethouse_cmd))
+    app.add_handler(CommandHandler("houseconfig", houseconfig_cmd))
     app.add_handler(CallbackQueryHandler(join_cb, pattern=r"^join:\d+$"))
     app.add_handler(CallbackQueryHandler(house_cb, pattern=r"^house:\d+$"))
     app.add_handler(CallbackQueryHandler(showlb_cb, pattern=r"^showlb$"))
+    app.add_handler(CallbackQueryHandler(showhouselb_cb, pattern=r"^showhouselb$"))
     app.add_handler(CallbackQueryHandler(resetlb_cb, pattern=r"^resetlb:(yes|no)$"))
+    app.add_handler(CallbackQueryHandler(houseconfig_cb, pattern=r"^hc:(toggle|plus|minus|nolimit|save)$"))
     app.add_handler(
         MessageHandler(
             filters.ChatType.GROUPS & ~filters.StatusUpdate.ALL,
@@ -100,7 +107,7 @@ def main() -> None:
         ),
         group=1,
     )
-    log.info("Pollingâ¦")
+    log.info("Polling...")
     app.run_polling(allowed_updates=["message", "callback_query"])
 
 
