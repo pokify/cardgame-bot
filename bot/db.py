@@ -139,6 +139,21 @@ async def init_schema() -> None:
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS deal_memory_chat_mode_idx ON deal_memory (chat_id, mode, created_at DESC)"
         )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pvp_settings (
+                chat_id      BIGINT PRIMARY KEY,
+                base_2       INTEGER NOT NULL DEFAULT 5,
+                bonus_2      INTEGER NOT NULL DEFAULT 1,
+                base_3       INTEGER NOT NULL DEFAULT 5,
+                bonus_3      INTEGER NOT NULL DEFAULT 2,
+                base_4       INTEGER NOT NULL DEFAULT 5,
+                bonus_4      INTEGER NOT NULL DEFAULT 3,
+                house_risk   INTEGER NOT NULL DEFAULT 0,
+                house_reward INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
 
 
 async def active_game(chat_id: int) -> asyncpg.Record | None:
@@ -557,3 +572,146 @@ async def house_leaderboard(chat_id: int, limit: int = 15) -> list[asyncpg.Recor
 
 async def reset_house_stats(chat_id: int) -> None:
     await pool().execute("DELETE FROM house_stats WHERE chat_id = $1", chat_id)
+
+
+def _default_pvp_settings() -> dict:
+    return {
+        "base_2": 5,
+        "bonus_2": 1,
+        "base_3": 5,
+        "bonus_3": 2,
+        "base_4": 5,
+        "bonus_4": 3,
+        "house_risk": 0,
+        "house_reward": 0,
+    }
+
+
+def pvp_points_for(settings: dict, n_players: int) -> int:
+    if n_players == 2:
+        base, bonus = settings["base_2"], settings["bonus_2"]
+    elif n_players == 3:
+        base, bonus = settings["base_3"], settings["bonus_3"]
+    else:
+        base, bonus = settings["base_4"], settings["bonus_4"]
+    if base <= 0:
+        return 0
+    return base + max(0, bonus)
+
+
+def house_rr_active(settings: dict) -> bool:
+    return int(settings.get("house_risk") or 0) != 0 or int(settings.get("house_reward") or 0) != 0
+
+
+async def get_pvp_settings(chat_id: int) -> dict:
+    row = await pool().fetchrow(
+        "SELECT * FROM pvp_settings WHERE chat_id = $1",
+        chat_id,
+    )
+    if row is None:
+        return _default_pvp_settings()
+    data = _default_pvp_settings()
+    for key in data:
+        if row[key] is not None:
+            data[key] = int(row[key])
+    if data["base_2"] <= 0:
+        data["bonus_2"] = 0
+    if data["base_3"] <= 0:
+        data["bonus_3"] = 0
+    if data["base_4"] <= 0:
+        data["bonus_4"] = 0
+    return data
+
+
+async def save_pvp_settings(chat_id: int, settings: dict) -> None:
+    data = {**_default_pvp_settings(), **settings}
+    if data["base_2"] <= 0:
+        data["base_2"] = 0
+        data["bonus_2"] = 0
+    if data["base_3"] <= 0:
+        data["base_3"] = 0
+        data["bonus_3"] = 0
+    if data["base_4"] <= 0:
+        data["base_4"] = 0
+        data["bonus_4"] = 0
+    await pool().execute(
+        """
+        INSERT INTO pvp_settings (
+            chat_id, base_2, bonus_2, base_3, bonus_3, base_4, bonus_4,
+            house_risk, house_reward
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        ON CONFLICT (chat_id) DO UPDATE SET
+            base_2 = EXCLUDED.base_2,
+            bonus_2 = EXCLUDED.bonus_2,
+            base_3 = EXCLUDED.base_3,
+            bonus_3 = EXCLUDED.bonus_3,
+            base_4 = EXCLUDED.base_4,
+            bonus_4 = EXCLUDED.bonus_4,
+            house_risk = EXCLUDED.house_risk,
+            house_reward = EXCLUDED.house_reward
+        """,
+        chat_id,
+        data["base_2"],
+        data["bonus_2"],
+        data["base_3"],
+        data["bonus_3"],
+        data["base_4"],
+        data["bonus_4"],
+        data["house_risk"],
+        data["house_reward"],
+    )
+
+
+async def apply_pvp_score_delta(chat_id: int, player: dict, delta: int) -> None:
+    """Change PvP Score only. Does not change Played/Wins."""
+    if delta == 0:
+        return
+    async with pool().acquire() as conn:
+        async with conn.transaction():
+            pre_rows = await conn.fetch(
+                """
+                SELECT user_id, score,
+                       ROW_NUMBER() OVER (
+                           ORDER BY score DESC, wins DESC, played ASC, user_id ASC
+                       ) AS rank
+                FROM player_stats
+                WHERE chat_id = $1
+                """,
+                chat_id,
+            )
+            old_ranks = {r["user_id"]: int(r["rank"]) for r in pre_rows}
+            old_scores = {r["user_id"]: int(r["score"]) for r in pre_rows}
+            await conn.execute(
+                """
+                INSERT INTO player_stats
+                    (chat_id, user_id, username, first_name, score, played, wins)
+                VALUES ($1, $2, $3, $4, $5, 0, 0)
+                ON CONFLICT (chat_id, user_id) DO UPDATE SET
+                    username = EXCLUDED.username,
+                    first_name = EXCLUDED.first_name,
+                    score = player_stats.score + EXCLUDED.score
+                """,
+                chat_id,
+                player["user_id"],
+                player["username"],
+                player["first_name"],
+                delta,
+            )
+            all_stats = await conn.fetch(
+                "SELECT user_id FROM player_stats WHERE chat_id = $1",
+                chat_id,
+            )
+            for r in all_stats:
+                uid = r["user_id"]
+                await conn.execute(
+                    """
+                    UPDATE player_stats
+                    SET prev_rank = $3, prev_score = $4
+                    WHERE chat_id = $1 AND user_id = $2
+                    """,
+                    chat_id,
+                    uid,
+                    old_ranks.get(uid),
+                    old_scores.get(uid),
+                )

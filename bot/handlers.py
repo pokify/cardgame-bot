@@ -299,8 +299,15 @@ def _house_display_name(user) -> str:
     return user.first_name or "player"
 
 
-def _house_confirm_text(user, max_plays: int | None) -> str:
+def _house_confirm_text(user, max_plays: int | None, pvp: dict | None = None) -> str:
     who = _house_display_name(user)
+    if pvp and db.house_rr_active(pvp):
+        risk = int(pvp["house_risk"])
+        reward = int(pvp["house_reward"])
+        return (
+            f"House games impact on PvP leaderboard: -{risk} loss/+{reward} win\n"
+            "Click Challenge the House to continue."
+        )
     if max_plays is None:
         limit = "with no daily limit"
     else:
@@ -375,39 +382,44 @@ async def house_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     max_plays = settings["max_plays_per_day"]
-    if max_plays is None:
+    pvp = await db.get_pvp_settings(group_chat.id)
+    rr_on = db.house_rr_active(pvp)
+
+    if max_plays is None and not rr_on:
         _house_confirmed_clicks.pop((game_id, user.id), None)
         await query.answer()
         await _run_house_challenge(context, game_id, group_chat.id, user.id)
         return
 
-    used = await db.house_challenges_used(group_chat.id, user.id)
-    if used >= max_plays:
-        _house_confirmed_clicks.pop((game_id, user.id), None)
-        await query.answer(
-            await _house_cooldown_text(user, used),
-            show_alert=True,
-        )
-        return
+    if max_plays is not None:
+        used = await db.house_challenges_used(group_chat.id, user.id)
+        if used >= max_plays:
+            _house_confirmed_clicks.pop((game_id, user.id), None)
+            await query.answer(
+                await _house_cooldown_text(user, used),
+                show_alert=True,
+            )
+            return
 
     key = (game_id, user.id)
     now_ts = datetime.now(timezone.utc).timestamp()
     confirmed_at = _house_confirmed_clicks.get(key)
     if confirmed_at is None or now_ts - confirmed_at > HOUSE_CONFIRM_TIMEOUT:
         _house_confirmed_clicks[key] = now_ts
-        await query.answer(_house_confirm_text(user, max_plays), show_alert=True)
+        await query.answer(_house_confirm_text(user, max_plays, pvp), show_alert=True)
         return
 
-    consumed, _remaining = await db.consume_house_challenge(
-        group_chat.id, user.id, max_plays
-    )
-    if not consumed:
-        _house_confirmed_clicks.pop(key, None)
-        await query.answer(
-            await _house_cooldown_text(user, max_plays),
-            show_alert=True,
+    if max_plays is not None:
+        consumed, _remaining = await db.consume_house_challenge(
+            group_chat.id, user.id, max_plays
         )
-        return
+        if not consumed:
+            _house_confirmed_clicks.pop(key, None)
+            await query.answer(
+                await _house_cooldown_text(user, max_plays),
+                show_alert=True,
+            )
+            return
 
     _house_confirmed_clicks.pop(key, None)
     await query.answer()
@@ -461,23 +473,35 @@ async def _run_house_challenge(
     )
 
     player_won = winner["user_id"] == player["user_id"]
+    pvp = await db.get_pvp_settings(chat_id)
+    rr_on = db.house_rr_active(pvp)
+    delta = 0
+    if rr_on:
+        delta = int(pvp["house_reward"]) if player_won else -int(pvp["house_risk"])
+
     if player_won:
         result = f"{player_tag} highest score, you win! 😤\n\nHouse will get you next time!"
+        if rr_on:
+            result += f"\n\n+{delta} PvP points!"
     else:
         result = (
             f"{player_tag} you lose! Never bet against the House! "
             "Better luck next time! 😗"
         )
+        if rr_on:
+            result += f"\n\n{delta} PvP points!"
 
     await context.bot.send_message(
         chat_id,
         result,
         parse_mode="HTML",
-        reply_markup=house_result_keyboard(),
+        reply_markup=winner_keyboard() if rr_on else house_result_keyboard(),
         disable_web_page_preview=True,
     )
 
     await db.bump_house_stats(chat_id, player, player_won)
+    if rr_on and delta:
+        await db.apply_pvp_score_delta(chat_id, player, delta)
     await db.set_status(game_id, "finished")
 
 
@@ -534,7 +558,9 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
     await context.bot.send_photo(chat_id, photo=InputFile(photo, filename="deal.png"))
 
     winner_tag = mention(winner["username"], winner["first_name"], winner["user_id"])
-    result = f"{winner_tag} wins! {WIN_POINTS} points!"
+    pvp = await db.get_pvp_settings(chat_id)
+    points = db.pvp_points_for(pvp, len(players))
+    result = f"{winner_tag} wins! {points} points!"
     if joker:
         joker_tag = mention(joker["username"], joker["first_name"], joker["user_id"])
         result += f"\n\n{joker_tag} Joker pulled -{JOKER_PENALTY} points \U0001F62D"
@@ -551,7 +577,7 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
         chat_id,
         players,
         winner["user_id"],
-        WIN_POINTS,
+        points,
         joker["user_id"] if joker else None,
         JOKER_PENALTY,
     )
@@ -722,6 +748,122 @@ async def houseconfig_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         _house_cfg_text(draft),
         parse_mode="HTML",
         reply_markup=_house_cfg_keyboard(draft),
+    )
+
+
+_pvp_cfg_draft: dict[int, dict] = {}
+
+
+def _pvp_cfg_text(draft: dict) -> str:
+    def row(n: int) -> str:
+        base = draft[f"base_{n}"]
+        bonus = 0 if base <= 0 else draft[f"bonus_{n}"]
+        return f"{n}P  baseline +{base}   join bonus +{bonus}"
+
+    return (
+        "<b>PvP Config</b>\n"
+        "Admins only\n\n"
+        "<b>Points per match</b>\n"
+        f"{row(2)}\n"
+        f"{row(3)}\n"
+        f"{row(4)}\n"
+        "Baseline 0 also zeroes that join bonus.\n\n"
+        "<b>House risk / reward (PvP board)</b>\n"
+        f"Risk -{draft['house_risk']}   Reward +{draft['house_reward']}\n"
+        "0 / 0 = House does not change PvP scores."
+    )
+
+
+def _pvp_cfg_keyboard(draft: dict):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    def pair(prefix: str) -> list:
+        return [
+            InlineKeyboardButton("−", callback_data=f"pc:{prefix}-"),
+            InlineKeyboardButton("+", callback_data=f"pc:{prefix}+"),
+        ]
+
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("2P baseline", callback_data="pc:noop")] + pair("b2"),
+            [InlineKeyboardButton("2P join bonus", callback_data="pc:noop")] + pair("n2"),
+            [InlineKeyboardButton("3P baseline", callback_data="pc:noop")] + pair("b3"),
+            [InlineKeyboardButton("3P join bonus", callback_data="pc:noop")] + pair("n3"),
+            [InlineKeyboardButton("4P baseline", callback_data="pc:noop")] + pair("b4"),
+            [InlineKeyboardButton("4P join bonus", callback_data="pc:noop")] + pair("n4"),
+            [InlineKeyboardButton("House risk", callback_data="pc:noop")] + pair("rk"),
+            [InlineKeyboardButton("House reward", callback_data="pc:noop")] + pair("rw"),
+            [InlineKeyboardButton("Save", callback_data="pc:save")],
+        ]
+    )
+
+
+async def pvpconfig_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    message = update.effective_message
+    if chat.type not in ("group", "supergroup"):
+        return
+    if not await _is_admin(context, chat.id, user.id):
+        await _delete_quietly(context.bot, chat.id, message.message_id if message else None)
+        return
+    draft = await db.get_pvp_settings(chat.id)
+    _pvp_cfg_draft[chat.id] = draft
+    await context.bot.send_message(
+        chat.id,
+        _pvp_cfg_text(draft),
+        parse_mode="HTML",
+        reply_markup=_pvp_cfg_keyboard(draft),
+    )
+
+
+async def pvpconfig_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    chat = query.message.chat
+    user = query.from_user
+    if not await _is_admin(context, chat.id, user.id):
+        await query.answer("Admins only.", show_alert=True)
+        return
+    draft = _pvp_cfg_draft.setdefault(chat.id, db._default_pvp_settings())
+    action = query.data.split(":", 1)[1]
+    keymap = {
+        "b2": "base_2",
+        "n2": "bonus_2",
+        "b3": "base_3",
+        "n3": "bonus_3",
+        "b4": "base_4",
+        "n4": "bonus_4",
+        "rk": "house_risk",
+        "rw": "house_reward",
+    }
+    if action == "noop":
+        await query.answer()
+        return
+    if action == "save":
+        await db.save_pvp_settings(chat.id, draft)
+        await query.answer("Saved.")
+        await query.edit_message_text("PvP config saved.", reply_markup=None)
+        return
+    field = keymap.get(action[:-1])
+    if field:
+        step = 1 if action.endswith("+") else -1
+        nxt = int(draft.get(field, 0)) + step
+        if field.startswith("base_") or field.startswith("bonus_"):
+            nxt = max(0, min(50, nxt))
+        else:
+            nxt = max(0, min(50, nxt))
+        draft[field] = nxt
+        if field == "base_2" and nxt <= 0:
+            draft["bonus_2"] = 0
+        if field == "base_3" and nxt <= 0:
+            draft["bonus_3"] = 0
+        if field == "base_4" and nxt <= 0:
+            draft["bonus_4"] = 0
+    await query.answer()
+    await query.edit_message_text(
+        _pvp_cfg_text(draft),
+        parse_mode="HTML",
+        reply_markup=_pvp_cfg_keyboard(draft),
     )
 
 

@@ -24,6 +24,8 @@ from bot.handlers import (
     houselb_cmd,
     join_cb,
     lb_cmd,
+    pvpconfig_cb,
+    pvpconfig_cmd,
     resetlb_cb,
     resetlb_cmd,
     resethouse_cmd,
@@ -57,6 +59,7 @@ async def post_init(application: Application) -> None:
         BotCommand("resetlb", "Reset cards leaderboard"),
         BotCommand("resethouse", "Reset house leaderboard"),
         BotCommand("houseconfig", "Configure house"),
+        BotCommand("pvpconfig", "Configure PvP points"),
     ]
     await application.bot.set_my_commands(
         private_commands,
@@ -94,12 +97,14 @@ def main() -> None:
     app.add_handler(CommandHandler("resetlb", resetlb_cmd))
     app.add_handler(CommandHandler("resethouse", resethouse_cmd))
     app.add_handler(CommandHandler("houseconfig", houseconfig_cmd))
+    app.add_handler(CommandHandler("pvpconfig", pvpconfig_cmd))
     app.add_handler(CallbackQueryHandler(join_cb, pattern=r"^join:\d+$"))
     app.add_handler(CallbackQueryHandler(house_cb, pattern=r"^house:\d+$"))
     app.add_handler(CallbackQueryHandler(showlb_cb, pattern=r"^showlb$"))
     app.add_handler(CallbackQueryHandler(showhouselb_cb, pattern=r"^showhouselb$"))
     app.add_handler(CallbackQueryHandler(resetlb_cb, pattern=r"^resetlb:(yes|no)$"))
     app.add_handler(CallbackQueryHandler(houseconfig_cb, pattern=r"^hc:(toggle|plus|minus|nolimit|save)$"))
+    app.add_handler(CallbackQueryHandler(pvpconfig_cb, pattern=r"^pc:"))
     app.add_handler(
         MessageHandler(
             filters.ChatType.GROUPS & ~filters.StatusUpdate.ALL,
