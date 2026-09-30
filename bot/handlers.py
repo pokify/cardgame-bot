@@ -90,7 +90,7 @@ async def _delete_quietly(bot, chat_id: int, message_id: int | None) -> None:
 def _leaderboard_html(rows) -> str:
     if not rows:
         return "No games yet. Start one with /cards."
-    lines = ["<b>Tomochi Card Leaderboard</b>", ""]
+    lines = ["<b>Tomochi Cards Leaderboard</b>", ""]
     # Build list with ranks for "passed by lower-score player" checks.
     ranked = list(enumerate(rows, start=1))
     top_score = int(rows[0]["score"]) if rows else 0
