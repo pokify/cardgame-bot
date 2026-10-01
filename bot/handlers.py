@@ -624,7 +624,7 @@ def _house_cfg_text(draft: dict) -> str:
         "<b>House Config</b>\n\n"
         f"House is currently {state}.\n"
         f"User max plays per day: {plays_label}\n\n"
-        "Telegram has no number box on buttons — use + / − or No limit, then Save."
+        "  "
     )
 
 
