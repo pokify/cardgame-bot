@@ -789,7 +789,7 @@ def _pvp_cfg_keyboard(draft: dict):
             [InlineKeyboardButton("2P", callback_data="pc:noop")] + pair("b2") + [InlineKeyboardButton("B", callback_data="pc:noop")] + pair("n2"),
             [InlineKeyboardButton("3P", callback_data="pc:noop")] + pair("b3") + [InlineKeyboardButton("B", callback_data="pc:noop")] + pair("n3"),
             [InlineKeyboardButton("4P", callback_data="pc:noop")] + pair("b4") + [InlineKeyboardButton("B", callback_data="pc:noop")] + pair("n4"),
-            [InlineKeyboardButton("HR", callback_data="pc:noop")] + pair("rk") + [InlineKeyboardButton("HR", callback_data="pc:noop")] + pair("rw"),
+            [InlineKeyboardButton("HRI", callback_data="pc:noop")] + pair("rk") + [InlineKeyboardButton("HRW", callback_data="pc:noop")] + pair("rw"),
             [InlineKeyboardButton("Joker", callback_data="pc:noop")] + pair("jk"),
             [InlineKeyboardButton("Save", callback_data="pc:save")],
         ]
@@ -841,7 +841,7 @@ async def pvpconfig_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if action == "save":
         await db.save_pvp_settings(chat.id, draft)
         await query.answer("Saved.")
-        await query.edit_message_text("PvP config saved.", reply_markup=None)
+        await query.edit_message_text("points config saved.", reply_markup=None)
         return
     field = keymap.get(action[:-1])
     if field:
