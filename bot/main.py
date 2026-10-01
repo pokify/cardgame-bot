@@ -58,8 +58,8 @@ async def post_init(application: Application) -> None:
         BotCommand("houselb", "Show house leaderboard"),
         BotCommand("resetlb", "Reset cards leaderboard"),
         BotCommand("resethouse", "Reset house leaderboard"),
-        BotCommand("houseconfig", "Configure house"),
-        BotCommand("pvpconfig", "Configure game points"),
+        BotCommand("houseconfig", "Config house"),
+        BotCommand("pvpconfig", "Config game points"),
     ]
     await application.bot.set_my_commands(
         private_commands,
