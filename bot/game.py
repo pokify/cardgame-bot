@@ -99,17 +99,47 @@ def pick_flavor(standing: dict | None) -> str:
     return random.choice(pool)
 
 
-def lobby_text(players: list, flavor: str | None = None) -> str:
+def pvp_base_bonus_for(settings: dict, n_players: int) -> tuple[int, int]:
+    """Return the configured baseline and join bonus for a player count."""
+    if n_players <= 1:
+        return 0, 0
+    if n_players == 2:
+        base, bonus = settings["base_2"], settings["bonus_2"]
+    elif n_players == 3:
+        base, bonus = settings["base_3"], settings["bonus_3"]
+    else:
+        base, bonus = settings["base_4"], settings["bonus_4"]
+    base = max(0, int(base))
+    bonus = max(0, int(bonus)) if base > 0 else 0
+    return base, bonus
+
+
+def lobby_text(
+    players: list,
+    flavor: str | None = None,
+    pvp_settings: dict | None = None,
+) -> str:
     n = len(players)
     flavor_block = f"{flavor}\n\n" if flavor else ""
-    return (
-        "<b>New hand has started!</b>\n\n"
-        f"{flavor_block}"
-        "Highest Tomochi card wins!\n\n"
-        f"Waiting for players… ({n}/{MAX_PLAYERS})\n"
-        f"{MIN_PLAYERS} minimum\n\n"
-        f"Players: {player_line(players)}"
-    )
+    settings = pvp_settings or {}
+    if settings:
+        base, bonus = pvp_base_bonus_for(settings, n)
+    else:
+        base, bonus = 0, 0
+
+    lines = [
+        "<b>New hand has started!</b>",
+        "",
+        flavor_block.rstrip("\n") if flavor_block else None,
+        "Highest Tomochi card wins!",
+        "",
+        f"Waiting for players… ({n}/{MAX_PLAYERS})",
+        f"Points to win: {base}",
+    ]
+    if bonus > 0:
+        lines.append(f"Join bonus: +{bonus}")
+    lines.extend(["", f"Players: {player_line(players)}"])
+    return "\n".join(line for line in lines if line is not None)
 
 
 def deal_house(player: dict, banned: list[str] | None = None) -> tuple[list[dict], dict, dict]:

@@ -18,6 +18,7 @@ from bot.game import (
     house_confirm_keyboard,
     lobby_keyboard,
     lobby_text,
+    pvp_base_bonus_for,
     mention,
     house_result_keyboard,
     pick_flavor,
@@ -173,7 +174,7 @@ async def cards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     house_on = await db.house_enabled(chat.id)
     msg = await update.message.reply_html(
-        lobby_text(players, game["flavor"]),
+        lobby_text(players, game["flavor"], await db.get_pvp_settings(chat.id)),
         reply_markup=lobby_keyboard(game["id"], house_available=house_on),
         disable_web_page_preview=True,
     )
@@ -233,7 +234,7 @@ async def join_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             run_game = True
         else:
             run_game = False
-            text = lobby_text(players, game["flavor"])
+            text = lobby_text(players, game["flavor"], await db.get_pvp_settings(chat.id))
             house_on = await db.house_enabled(chat.id)
             markup = lobby_keyboard(game_id, house_available=house_on and len(players) <= 1)
 
@@ -541,9 +542,15 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
         await _delete_quietly(context.bot, chat_id, game["message_id"])
 
     names = ", ".join(mention(p["username"], p["first_name"], p["user_id"]) for p in players)
+    pvp = await db.get_pvp_settings(chat_id)
+    base_points, join_bonus = pvp_base_bonus_for(pvp, len(players))
+    if join_bonus > 0:
+        points_line = f"Points to win: {base_points} (+{join_bonus})"
+    else:
+        points_line = f"Points to win: {base_points}"
     await context.bot.send_message(
         chat_id,
-        f"Game started! ({len(players)} players)\n\nPlayers: {names}",
+        f"Game started! ({len(players)} players)\n\n{points_line}\n\nPlayers: {names}",
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
@@ -553,7 +560,6 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
 
     banned = await db.banned_cards(chat_id, "pvp2") if len(players) == 2 else []
     assignments, winner, joker = deal(players, banned)
-    pvp = await db.get_pvp_settings(chat_id)
     joker_points = int(pvp["joker_points"])
     if joker:
         joker["display_score"] = joker_points
@@ -950,7 +956,7 @@ async def bump_lobby_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         try:
             msg = await context.bot.send_message(
                 chat_id,
-                lobby_text(players, game["flavor"]),
+                lobby_text(players, game["flavor"], await db.get_pvp_settings(chat_id)),
                 parse_mode="HTML",
                 reply_markup=lobby_keyboard(
                     game_id,
@@ -1041,7 +1047,7 @@ async def _open_auto_lobby(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> 
     game = await db.create_game(chat_id, "auto", expires_at(), flavor)
     msg = await context.bot.send_message(
         chat_id,
-        lobby_text([], game["flavor"]),
+        lobby_text([], game["flavor"], await db.get_pvp_settings(chat_id)),
         parse_mode="HTML",
         reply_markup=lobby_keyboard(game["id"], house_available=await db.house_enabled(chat_id)),
         disable_web_page_preview=True,
