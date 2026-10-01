@@ -93,7 +93,7 @@ def _leaderboard_html(rows, show_house: bool = False) -> str:
         return "No games yet. Start one with /cards."
     lines = ["<b>Tomochi Cards Leaderboard</b>", ""]
     if show_house:
-        lines.append("H(House) W(Wins) L(Loss) P(Played)")
+        lines.append("H(House) W(Wins) L(Loss) P(Plays)")
         lines.append("")
     ranked = list(enumerate(rows, start=1))
     top_score = int(rows[0]["score"]) if rows else 0
