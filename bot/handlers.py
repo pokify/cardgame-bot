@@ -770,7 +770,7 @@ def _pvp_cfg_text(draft: dict) -> str:
         f"3P[+{draft['base_3']}] bonus [+{bonus(3)}]\n"
         f"4P[+{draft['base_4']}] bonus [+{bonus(4)}]\n\n"
         "House Risk/Reward:\n"
-        f"Risk[{draft['house_risk']}]/Reward [{draft['house_reward']}]\n\n"
+        f"Risk[{draft['house_risk']}]|Reward [{draft['house_reward']}]\n\n"
         f"Joker: [{draft['joker_points']}]"
     )
 
