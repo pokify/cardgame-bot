@@ -88,14 +88,15 @@ async def _delete_quietly(bot, chat_id: int, message_id: int | None) -> None:
         pass
 
 
-def _leaderboard_html(rows) -> str:
+def _leaderboard_html(rows, show_house: bool = False) -> str:
     if not rows:
         return "No games yet. Start one with /cards."
     lines = ["<b>Tomochi Cards Leaderboard</b>", ""]
-    # Build list with ranks for "passed by lower-score player" checks.
+    if show_house:
+        lines.append("H(House) W(Wins) L(Loss) P(Played)")
+        lines.append("")
     ranked = list(enumerate(rows, start=1))
     top_score = int(rows[0]["score"]) if rows else 0
-    # Crown only when strictly alone at the top (at least 1 point ahead).
     sole_leader = len(rows) == 1 or top_score > int(rows[1]["score"])
     for i, row in ranked:
         prev_rank = row["prev_rank"]
@@ -103,38 +104,38 @@ def _leaderboard_html(rows) -> str:
         score = int(row["score"])
 
         if i == 1 and sole_leader:
-            # Only crown when at least 1 point clear of everyone else.
-            # Tied top scores -> dash; still clear after a points loss -> keep crown.
-            prefix = "\U0001F451"  # crown
+            prefix = "\U0001F451"
         elif prev_rank is None:
-            # First appearance on the board.
-            prefix = "\u2014"  # em dash
+            prefix = "\u2014"
         elif i < prev_rank and prev_score is not None and score > int(prev_score):
-            # Climbed by gaining points (not just reshuffled).
-            prefix = "\u2B06\uFE0F"  # up arrow emoji
+            prefix = "\u2B06\uFE0F"
         elif i > prev_rank and prev_score is not None:
             dropped_points = score < int(prev_score)
-            # Someone who had strictly fewer points before is now above us.
             passed_from_below = any(
                 other["prev_score"] is not None
                 and int(other["prev_score"]) < int(prev_score)
                 for j, other in ranked
                 if j < i
             )
-            if dropped_points or passed_from_below:
-                prefix = "\u2B07\uFE0F"  # down arrow emoji
-            else:
-                # Rank number fell only because peers left our tier - neutral.
-                prefix = "\u2014"  # em dash
+            prefix = "\u2B07\uFE0F" if dropped_points or passed_from_below else "\u2014"
         else:
-            # Includes tied leaders (i==1 but not sole_leader) and unchanged ranks.
-            prefix = "\u2014"  # em dash
+            prefix = "\u2014"
 
         who = mention(row["username"], row["first_name"], row["user_id"])
-        lines.append(
-            f"{prefix} {who}\n"
-            f"Score: {row['score']} | Played: {row['played']} | Wins: {row['wins']}"
-        )
+        wins = int(row["wins"])
+        played = int(row["played"])
+        losses = max(0, played - wins)
+        if show_house:
+            wins += int(row["house_wins"] or 0)
+            losses += int(row["house_losses"] or 0)
+            played += int(row["house_played"] or 0)
+            house_pts = int(row["house_points"] or 0)
+            stats = (
+                f"Score: {score} (H: {house_pts}) | W: {wins} | L: {losses} | P: {played}"
+            )
+        else:
+            stats = f"Score: {score} | W: {wins} | L: {losses} | P: {played}"
+        lines.append(f"{prefix} {who}\n{stats}")
     return "\n".join(lines)
 
 
@@ -482,14 +483,14 @@ async def _run_house_challenge(
     if player_won:
         result = f"{player_tag} highest score, you win! 😤\n\nHouse will get you next time!"
         if rr_on:
-            result += f"\n\n+{delta} PvP points!"
+            result += f"\n\n+{delta} points!"
     else:
         result = (
             f"{player_tag} you lose! Never bet against the House! "
             "Better luck next time! 😗"
         )
         if rr_on:
-            result += f"\n\n{delta} PvP points!"
+            result += f"\n\n{delta} points!"
 
     await context.bot.send_message(
         chat_id,
@@ -552,18 +553,22 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
 
     banned = await db.banned_cards(chat_id, "pvp2") if len(players) == 2 else []
     assignments, winner, joker = deal(players, banned)
+    pvp = await db.get_pvp_settings(chat_id)
+    joker_points = int(pvp["joker_points"])
+    if joker:
+        joker["display_score"] = joker_points
     if len(players) == 2:
         await db.record_deal_memory(chat_id, "pvp2", [a["card_key"] for a in assignments])
     photo = render_deal(assignments)
     await context.bot.send_photo(chat_id, photo=InputFile(photo, filename="deal.png"))
 
     winner_tag = mention(winner["username"], winner["first_name"], winner["user_id"])
-    pvp = await db.get_pvp_settings(chat_id)
     points = db.pvp_points_for(pvp, len(players))
     result = f"{winner_tag} wins! {points} points!"
     if joker:
         joker_tag = mention(joker["username"], joker["first_name"], joker["user_id"])
-        result += f"\n\n{joker_tag} Joker pulled -{JOKER_PENALTY} points \U0001F62D"
+        sign = "+" if joker_points > 0 else ""
+        result += f"\n\n{joker_tag} Joker pulled {sign}{joker_points} points \U0001F62D"
     await context.bot.send_message(
         chat_id,
         result,
@@ -579,7 +584,7 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
         winner["user_id"],
         points,
         joker["user_id"] if joker else None,
-        JOKER_PENALTY,
+        joker_points,
     )
 
 
@@ -755,22 +760,18 @@ _pvp_cfg_draft: dict[int, dict] = {}
 
 
 def _pvp_cfg_text(draft: dict) -> str:
-    def row(n: int) -> str:
-        base = draft[f"base_{n}"]
-        bonus = 0 if base <= 0 else draft[f"bonus_{n}"]
-        return f"{n}P  baseline +{base}   join bonus +{bonus}"
+    def bonus(n: int) -> int:
+        return 0 if draft[f"base_{n}"] <= 0 else draft[f"bonus_{n}"]
 
     return (
-        "<b>PvP Config</b>\n"
-        "Admins only\n\n"
-        "<b>Points per match</b>\n"
-        f"{row(2)}\n"
-        f"{row(3)}\n"
-        f"{row(4)}\n"
-        "Baseline 0 also zeroes that join bonus.\n\n"
-        "<b>House risk / reward (PvP board)</b>\n"
-        f"Risk -{draft['house_risk']}   Reward +{draft['house_reward']}\n"
-        "0 / 0 = House does not change PvP scores."
+        "<b>Points Config</b>\n\n"
+        "Per Match + join bonus:\n"
+        f"2P[+{draft['base_2']}] bonus [+{bonus(2)}]\n"
+        f"3P[+{draft['base_3']}] bonus [+{bonus(3)}]\n"
+        f"4P[+{draft['base_4']}] bonus [+{bonus(4)}]\n\n"
+        "House Risk/Reward:\n"
+        f"Risk[{draft['house_risk']}]/Reward [{draft['house_reward']}]\n\n"
+        f"Joker: [{draft['joker_points']}]"
     )
 
 
@@ -785,14 +786,11 @@ def _pvp_cfg_keyboard(draft: dict):
 
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("2P baseline", callback_data="pc:noop")] + pair("b2"),
-            [InlineKeyboardButton("2P join bonus", callback_data="pc:noop")] + pair("n2"),
-            [InlineKeyboardButton("3P baseline", callback_data="pc:noop")] + pair("b3"),
-            [InlineKeyboardButton("3P join bonus", callback_data="pc:noop")] + pair("n3"),
-            [InlineKeyboardButton("4P baseline", callback_data="pc:noop")] + pair("b4"),
-            [InlineKeyboardButton("4P join bonus", callback_data="pc:noop")] + pair("n4"),
-            [InlineKeyboardButton("House risk", callback_data="pc:noop")] + pair("rk"),
-            [InlineKeyboardButton("House reward", callback_data="pc:noop")] + pair("rw"),
+            [InlineKeyboardButton("2P", callback_data="pc:noop")] + pair("b2") + [InlineKeyboardButton("B", callback_data="pc:noop")] + pair("n2"),
+            [InlineKeyboardButton("3P", callback_data="pc:noop")] + pair("b3") + [InlineKeyboardButton("B", callback_data="pc:noop")] + pair("n3"),
+            [InlineKeyboardButton("4P", callback_data="pc:noop")] + pair("b4") + [InlineKeyboardButton("B", callback_data="pc:noop")] + pair("n4"),
+            [InlineKeyboardButton("HR", callback_data="pc:noop")] + pair("rk") + [InlineKeyboardButton("HR", callback_data="pc:noop")] + pair("rw"),
+            [InlineKeyboardButton("Joker", callback_data="pc:noop")] + pair("jk"),
             [InlineKeyboardButton("Save", callback_data="pc:save")],
         ]
     )
@@ -835,6 +833,7 @@ async def pvpconfig_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "n4": "bonus_4",
         "rk": "house_risk",
         "rw": "house_reward",
+        "jk": "joker_points",
     }
     if action == "noop":
         await query.answer()
@@ -848,9 +847,9 @@ async def pvpconfig_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if field:
         step = 1 if action.endswith("+") else -1
         nxt = int(draft.get(field, 0)) + step
-        if field.startswith("base_") or field.startswith("bonus_"):
-            nxt = max(0, min(50, nxt))
-        else:
+        if field == "joker_points":
+            nxt = max(-50, min(50, nxt))
+        elif field.startswith("base_") or field.startswith("bonus_") or field.startswith("house_"):
             nxt = max(0, min(50, nxt))
         draft[field] = nxt
         if field == "base_2" and nxt <= 0:
@@ -867,12 +866,18 @@ async def pvpconfig_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
+async def _cards_lb(chat_id: int) -> str:
+    settings = await db.get_pvp_settings(chat_id)
+    rows = await db.leaderboard(chat_id)
+    return _leaderboard_html(rows, show_house=db.house_rr_active(settings))
+
+
 async def lb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
     if chat.type not in ("group", "supergroup"):
         await update.message.reply_text("Use /cardslb in the group.")
         return
-    html = _leaderboard_html(await db.leaderboard(chat.id))
+    html = await _cards_lb(chat.id)
     await update.message.reply_html(html, disable_web_page_preview=True)
 
 
@@ -880,7 +885,7 @@ async def showlb_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     chat = query.message.chat
-    html = _leaderboard_html(await db.leaderboard(chat.id))
+    html = await _cards_lb(chat.id)
     await context.bot.send_message(
         chat.id,
         html,

@@ -150,9 +150,16 @@ async def init_schema() -> None:
                 base_4       INTEGER NOT NULL DEFAULT 5,
                 bonus_4      INTEGER NOT NULL DEFAULT 3,
                 house_risk   INTEGER NOT NULL DEFAULT 0,
-                house_reward INTEGER NOT NULL DEFAULT 0
+                house_reward INTEGER NOT NULL DEFAULT 0,
+                joker_points INTEGER NOT NULL DEFAULT -5
             )
             """
+        )
+        await conn.execute(
+            "ALTER TABLE pvp_settings ADD COLUMN IF NOT EXISTS joker_points INTEGER NOT NULL DEFAULT -5"
+        )
+        await conn.execute(
+            "ALTER TABLE player_stats ADD COLUMN IF NOT EXISTS house_points INTEGER NOT NULL DEFAULT 0"
         )
 
 
@@ -332,7 +339,7 @@ async def bump_stats(
                 if is_win:
                     delta += points
                 if is_joker:
-                    delta -= joker_penalty
+                    delta += joker_penalty
                 await conn.execute(
                     """
                     INSERT INTO player_stats
@@ -379,10 +386,16 @@ async def leaderboard(chat_id: int, limit: int = 15) -> list[asyncpg.Record]:
     # (incumbent stays ahead of someone who only just tied them).
     return await pool().fetch(
         """
-        SELECT * FROM player_stats
-        WHERE chat_id = $1
-        ORDER BY score DESC, wins DESC, played ASC,
-                 COALESCE(prev_rank, 2147483647) ASC, user_id ASC
+        SELECT ps.*,
+               COALESCE(hs.wins, 0) AS house_wins,
+               COALESCE(hs.losses, 0) AS house_losses,
+               COALESCE(hs.played, 0) AS house_played
+        FROM player_stats ps
+        LEFT JOIN house_stats hs
+          ON hs.chat_id = ps.chat_id AND hs.user_id = ps.user_id
+        WHERE ps.chat_id = $1
+        ORDER BY ps.score DESC, ps.wins DESC, ps.played ASC,
+                 COALESCE(ps.prev_rank, 2147483647) ASC, ps.user_id ASC
         LIMIT $2
         """,
         chat_id,
@@ -584,6 +597,7 @@ def _default_pvp_settings() -> dict:
         "bonus_4": 3,
         "house_risk": 0,
         "house_reward": 0,
+        "joker_points": -5,
     }
 
 
@@ -638,9 +652,9 @@ async def save_pvp_settings(chat_id: int, settings: dict) -> None:
         """
         INSERT INTO pvp_settings (
             chat_id, base_2, bonus_2, base_3, bonus_3, base_4, bonus_4,
-            house_risk, house_reward
+            house_risk, house_reward, joker_points
         )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
         ON CONFLICT (chat_id) DO UPDATE SET
             base_2 = EXCLUDED.base_2,
             bonus_2 = EXCLUDED.bonus_2,
@@ -649,7 +663,8 @@ async def save_pvp_settings(chat_id: int, settings: dict) -> None:
             base_4 = EXCLUDED.base_4,
             bonus_4 = EXCLUDED.bonus_4,
             house_risk = EXCLUDED.house_risk,
-            house_reward = EXCLUDED.house_reward
+            house_reward = EXCLUDED.house_reward,
+            joker_points = EXCLUDED.joker_points
         """,
         chat_id,
         data["base_2"],
@@ -660,6 +675,7 @@ async def save_pvp_settings(chat_id: int, settings: dict) -> None:
         data["bonus_4"],
         data["house_risk"],
         data["house_reward"],
+        data["joker_points"],
     )
 
 
@@ -685,12 +701,13 @@ async def apply_pvp_score_delta(chat_id: int, player: dict, delta: int) -> None:
             await conn.execute(
                 """
                 INSERT INTO player_stats
-                    (chat_id, user_id, username, first_name, score, played, wins)
-                VALUES ($1, $2, $3, $4, $5, 0, 0)
+                    (chat_id, user_id, username, first_name, score, played, wins, house_points)
+                VALUES ($1, $2, $3, $4, $5, 0, 0, $5)
                 ON CONFLICT (chat_id, user_id) DO UPDATE SET
                     username = EXCLUDED.username,
                     first_name = EXCLUDED.first_name,
-                    score = player_stats.score + EXCLUDED.score
+                    score = player_stats.score + EXCLUDED.score,
+                    house_points = player_stats.house_points + EXCLUDED.house_points
                 """,
                 chat_id,
                 player["user_id"],
