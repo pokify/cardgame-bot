@@ -131,7 +131,7 @@ def lobby_text(
         "<b>New hand has started!</b>",
         "",
         flavor_block.rstrip("\n") if flavor_block else None,
-        "\nHighest Tomochi card wins!\n\n",
+        "\nHighest Tomochi card wins!\n",
         "",
         f"Waiting for players… ({n}/{MAX_PLAYERS})",
         f"Points to win: {base}",
