@@ -301,14 +301,28 @@ def _house_display_name(user) -> str:
     return user.first_name or "player"
 
 
-def _house_confirm_text(user, max_plays: int | None, pvp: dict | None = None) -> str:
+def _house_confirm_text(
+    user,
+    max_plays: int | None,
+    pvp: dict | None = None,
+    remaining: int | None = None,
+) -> str:
     who = _house_display_name(user)
-    if pvp and db.house_rr_active(pvp):
+    rr_on = bool(pvp and db.house_rr_active(pvp))
+    if max_plays is not None and rr_on:
+        risk = int(pvp["house_risk"])
+        reward = int(pvp["house_reward"])
+        remaining = max(0, int(remaining if remaining is not None else max_plays))
+        return (
+            f"House: -{risk} loss/+{reward} win ♠ daily limit: {max_plays} ♣ "
+            f"{who} {remaining} house challenges remaining ♦ click Challenge House to continue"
+        )
+    if rr_on:
         risk = int(pvp["house_risk"])
         reward = int(pvp["house_reward"])
         return (
-            f"House games impact on PvP leaderboard: -{risk} loss/+{reward} win\n"
-            "Click Challenge the House to continue."
+            f"House: -{risk} loss/+{reward} win\n"
+            "Click Challenge House to continue."
         )
     if max_plays is None:
         limit = "with no daily limit"
@@ -316,9 +330,8 @@ def _house_confirm_text(user, max_plays: int | None, pvp: dict | None = None) ->
         limit = f"up to {max_plays} time(s) a day"
     return (
         f"You can challenge the House {limit} as {who}. "
-        "Click Challenge the House to continue."
+        "Click Challenge House to continue."
     )
-
 
 async def _house_cooldown_text(user, used: int) -> str:
     """Return the remaining time until the database's CURRENT_DATE resets."""
@@ -393,8 +406,11 @@ async def house_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _run_house_challenge(context, game_id, group_chat.id, user.id)
         return
 
+    used = 0
+    remaining = None
     if max_plays is not None:
         used = await db.house_challenges_used(group_chat.id, user.id)
+        remaining = max(0, int(max_plays) - used)
         if used >= max_plays:
             _house_confirmed_clicks.pop((game_id, user.id), None)
             await query.answer(
@@ -408,7 +424,10 @@ async def house_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     confirmed_at = _house_confirmed_clicks.get(key)
     if confirmed_at is None or now_ts - confirmed_at > HOUSE_CONFIRM_TIMEOUT:
         _house_confirmed_clicks[key] = now_ts
-        await query.answer(_house_confirm_text(user, max_plays, pvp), show_alert=True)
+        await query.answer(
+            _house_confirm_text(user, max_plays, pvp, remaining),
+            show_alert=True,
+        )
         return
 
     if max_plays is not None:

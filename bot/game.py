@@ -133,11 +133,11 @@ def lobby_text(
         flavor_block.rstrip("\n") if flavor_block else None,
         "\nHighest Tomochi card wins!\n",
         "",
-        f"Waiting for players… ({n}/{MAX_PLAYERS})",
-        f"Points to win: {base}",
+        f"♢ Waiting for players… ({n}/{MAX_PLAYERS})",
+        f"♤ Points to win: {base}",
     ]
     if bonus > 0:
-        lines.append(f"Join bonus: +{bonus}")
+        lines.append(f"♧ Join bonus: +{bonus}")
     lines.extend(["", f"Players: {player_line(players)}"])
     return "\n".join(line for line in lines if line is not None)
 
