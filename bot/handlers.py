@@ -89,6 +89,17 @@ async def _delete_quietly(bot, chat_id: int, message_id: int | None) -> None:
         pass
 
 
+def _custom_emoji(emoji_id: str, fallback: str) -> str:
+    """Return Telegram HTML for a custom emoji with its Unicode fallback."""
+    return f'<tg-emoji emoji-id="{emoji_id}">{fallback}</tg-emoji>'
+
+
+def _superscript_movement(movement: int) -> str:
+    """Format rank movement as Unicode superscript, e.g. ⁻³ or ⁺²."""
+    digits = str(abs(movement)).translate(str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹"))
+    return ("⁺" if movement > 0 else "⁻") + digits if movement else ""
+
+
 def _leaderboard_html(rows, show_house: bool = False) -> str:
     if not rows:
         return "No games yet. Start one with /cards."
@@ -96,31 +107,79 @@ def _leaderboard_html(rows, show_house: bool = False) -> str:
     if show_house:
         lines.append("H(House) W(Wins) L(Loss) P(Plays)")
         lines.append("")
+
+    # Telegram custom emoji IDs for leaderboard movement badges.
+    crown = _custom_emoji("5962786385042610279", "👑")
+    up_arrow = _custom_emoji("5908854201533867501", "⬆️")
+    down_arrow = _custom_emoji("5908957778965177126", "⬇️")
+    new_badge = _custom_emoji("5911212056974991641", "🆕")
+    still_badge = _custom_emoji("5883953450030472158", "🥱")
+    last_badge = _custom_emoji("5882040570381081275", "😵")
+
+    up_badges = {
+        1: ("5882040965518074383", "😙"),
+        2: ("5962888046918506770", "⚔️"),
+        3: ("5884318255962660623", "⚡️"),
+        4: ("5933527315475601401", "🔥"),
+        5: ("5963084567442102698", "💪"),
+        6: ("5962984795351816242", "🔥"),
+        7: ("5963323595257026790", "🧙‍♂️"),
+        8: ("5962823192912336897", "🦸‍♂️"),
+        9: ("5962825168597293123", "👨‍🚀"),
+        10: ("5962923265650334847", "🪐"),
+    }
+    down_badges = {
+        1: ("5882178030809391269", "😱"),
+        2: ("5881869398754467619", "😫"),
+        3: ("5882216496536493419", "🕸️"),
+        4: ("5934000315928942445", "😲"),
+        5: ("5933873287976208902", "👾"),
+        6: ("5962930348051404923", "🪖"),
+        7: ("5962930348051404923", "🪖"),
+        8: ("5962930348051404923", "🪖"),
+        9: ("5962930348051404923", "🪖"),
+        10: ("5962930348051404923", "🪖"),
+    }
+
     ranked = list(enumerate(rows, start=1))
     top_score = int(rows[0]["score"]) if rows else 0
     sole_leader = len(rows) == 1 or top_score > int(rows[1]["score"])
+
     for i, row in ranked:
         prev_rank = row["prev_rank"]
         prev_score = row["prev_score"]
         score = int(row["score"])
+        movement = (int(prev_rank) - i) if prev_rank is not None else 0
+        is_new = prev_rank is None
+        is_last = i == len(rows)
 
         if i == 1 and sole_leader:
-            prefix = "\U0001F451"
-        elif prev_rank is None:
-            prefix = "\u2014"
-        elif i < prev_rank and prev_score is not None and score > int(prev_score):
-            prefix = "\u2B06\uFE0F"
-        elif i > prev_rank and prev_score is not None:
-            dropped_points = score < int(prev_score)
-            passed_from_below = any(
-                other["prev_score"] is not None
-                and int(other["prev_score"]) < int(prev_score)
-                for j, other in ranked
-                if j < i
-            )
-            prefix = "\u2B07\uFE0F" if dropped_points or passed_from_below else "\u2014"
+            lb_badge = crown
+        elif is_new:
+            lb_badge = new_badge
+        elif is_last:
+            lb_badge = last_badge
+        elif movement > 0:
+            emoji_id, fallback = up_badges.get(min(movement, 10), up_badges[10])
+            lb_badge = _custom_emoji(emoji_id, fallback)
+        elif movement < 0:
+            emoji_id, fallback = down_badges.get(min(abs(movement), 10), down_badges[10])
+            lb_badge = _custom_emoji(emoji_id, fallback)
         else:
-            prefix = "\u2014"
+            lb_badge = still_badge
+
+        if is_new:
+            position_symbol = new_badge
+            movement_text = ""
+        elif movement > 0:
+            position_symbol = up_arrow
+            movement_text = _superscript_movement(movement)
+        elif movement < 0:
+            position_symbol = down_arrow
+            movement_text = _superscript_movement(movement)
+        else:
+            position_symbol = "&lt;&gt;"
+            movement_text = ""
 
         who = mention(row["username"], row["first_name"], row["user_id"])
         wins = int(row["wins"])
@@ -131,12 +190,12 @@ def _leaderboard_html(rows, show_house: bool = False) -> str:
             losses += int(row["house_losses"] or 0)
             played += int(row["house_played"] or 0)
             house_pts = int(row["house_points"] or 0)
-            stats = (
-                f"Score: {score} (H: {house_pts}) | W: {wins} | L: {losses} | P: {played}"
-            )
+            stats = f"Score: {score} (H:{house_pts}) | W:{wins} | L:{losses} | P:{played}"
         else:
-            stats = f"Score: {score} | W: {wins} | L: {losses} | P: {played}"
-        lines.append(f"{prefix} {who}\n{stats}")
+            stats = f"Score: {score} | W:{wins} | L:{losses} | P:{played}"
+
+        movement_prefix = f"{movement_text}{lb_badge} " if movement_text else f"{lb_badge} "
+        lines.append(f"<b>{i}.</b> {who}\n{movement_prefix}{position_symbol} <b>{stats}</b>")
     return "\n".join(lines)
 
 
