@@ -654,6 +654,74 @@ async def save_pvp_settings(chat_id: int, settings: dict) -> None:
     )
 
 
+async def apply_house_result(
+    chat_id: int,
+    player: dict,
+    delta: int,
+    won: bool,
+) -> None:
+    """Record one House game in the combined leaderboard.
+
+    House games increment Played and Wins (on a win), and the configured
+    House result changes both overall Score and the H (House) total.
+    """
+    async with pool().acquire() as conn:
+        async with conn.transaction():
+            pre_rows = await conn.fetch(
+                """
+                SELECT user_id, score,
+                       ROW_NUMBER() OVER (
+                           ORDER BY score DESC, wins DESC, played ASC, user_id ASC
+                       ) AS rank
+                FROM player_stats
+                WHERE chat_id = $1
+                """,
+                chat_id,
+            )
+            old_ranks = {r["user_id"]: int(r["rank"]) for r in pre_rows}
+            old_scores = {r["user_id"]: int(r["score"]) for r in pre_rows}
+
+            await conn.execute(
+                """
+                INSERT INTO player_stats
+                    (chat_id, user_id, username, first_name,
+                     score, played, wins, house_points)
+                VALUES ($1, $2, $3, $4, $5, 1, $6, $5)
+                ON CONFLICT (chat_id, user_id) DO UPDATE SET
+                    username = EXCLUDED.username,
+                    first_name = EXCLUDED.first_name,
+                    score = player_stats.score + EXCLUDED.score,
+                    played = player_stats.played + 1,
+                    wins = player_stats.wins + EXCLUDED.wins,
+                    house_points = player_stats.house_points + EXCLUDED.house_points
+                """,
+                chat_id,
+                player["user_id"],
+                player["username"],
+                player["first_name"],
+                delta,
+                1 if won else 0,
+            )
+
+            all_stats = await conn.fetch(
+                "SELECT user_id FROM player_stats WHERE chat_id = $1",
+                chat_id,
+            )
+            for row in all_stats:
+                uid = row["user_id"]
+                await conn.execute(
+                    """
+                    UPDATE player_stats
+                    SET prev_rank = $3, prev_score = $4
+                    WHERE chat_id = $1 AND user_id = $2
+                    """,
+                    chat_id,
+                    uid,
+                    old_ranks.get(uid),
+                    old_scores.get(uid),
+                )
+
+
 async def apply_pvp_score_delta(chat_id: int, player: dict, delta: int) -> None:
     """Change PvP Score only. Does not change Played/Wins."""
     if delta == 0:

@@ -603,6 +603,15 @@ async def _run_house_challenge(
     if rr_on:
         delta = int(pvp["house_reward"]) if player_won else -int(pvp["house_risk"])
 
+    # House challenges count toward the same combined leaderboard W/P totals
+    # as PvP. Score and H are both changed by the House result.
+    await db.apply_house_result(
+        chat_id,
+        player,
+        delta,
+        won=player_won,
+    )
+
     if player_won:
         result = f"{player_tag} highest score, you win! 😤\n\nHouse will get you next time!"
         if rr_on:
@@ -623,8 +632,6 @@ async def _run_house_challenge(
         disable_web_page_preview=True,
     )
 
-    if rr_on and delta:
-        await db.apply_pvp_score_delta(chat_id, player, delta)
     await db.set_status(game_id, "finished")
 
 
