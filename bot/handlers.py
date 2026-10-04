@@ -181,7 +181,7 @@ def _leaderboard_html(rows, show_house: bool = False) -> str:
         house_pts = int(row["house_points"] or 0)
         stats = f"Score: {score} (H:{house_pts}) | W:{wins} | P:{played}"
         movement_prefix = f"{movement_text}{lb_badge}" if movement_text else lb_badge
-        lines.append(f"<b>{i}.</b> {who}\n{movement_prefix} {position_symbol} <b>{stats}</b>")
+        lines.append(f"<b>    {i}.</b> {who}\n{movement_prefix} {position_symbol} <b>{stats}</b>")
 
     return "\n".join(lines)
 
