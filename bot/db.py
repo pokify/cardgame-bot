@@ -472,7 +472,7 @@ async def get_house_settings(chat_id: int) -> dict:
     return {
         "house_enabled": bool(row["house_enabled"]),
         "max_plays_per_day": row["max_plays_per_day"],
-        "pvp_before_unlock": max(1, int(row["pvp_before_unlock"] or 1)),
+        "pvp_before_unlock": max(0, int(row["pvp_before_unlock"] or 0)),
     }
 
 
@@ -482,7 +482,7 @@ async def save_house_settings(
     max_plays_per_day: int | None,
     pvp_before_unlock: int = 1,
 ) -> None:
-    pvp_before_unlock = max(1, min(20, int(pvp_before_unlock)))
+    pvp_before_unlock = max(0, min(20, int(pvp_before_unlock)))
     await pool().execute(
         """
         INSERT INTO house_settings

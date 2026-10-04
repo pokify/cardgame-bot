@@ -201,7 +201,7 @@ def _leaderboard_html(rows, show_house: bool = True) -> str:
             elif movement < 0:
                 position = _tg_emoji(LB_RANK_DOWN, "⬇️")
             else:
-                position = "<>"
+                position = "&lt;&gt;"
             prefix = _movement_prefix(movement, lb_id, lb_fallback, position)
 
         who = mention(row["username"], row["first_name"], row["user_id"])
@@ -488,7 +488,7 @@ async def house_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await query.answer("House challenges are disabled in this group.", show_alert=True)
         return
 
-    required_pvp = max(1, int(settings.get("pvp_before_unlock", 1)))
+    required_pvp = max(0, int(settings.get("pvp_before_unlock", 1)))
     pvp_played = await db.pvp_games_played(group_chat.id, user.id)
     if pvp_played < required_pvp:
         game_word = "game" if required_pvp == 1 else "games"
@@ -749,7 +749,7 @@ def _house_cfg_text(draft: dict) -> str:
     plays = draft.get("max_plays_per_day")
     plays_label = "No limit" if plays is None else str(plays)
     state = "enabled" if draft.get("house_enabled") else "disabled"
-    unlock = max(1, int(draft.get("pvp_before_unlock", 1)))
+    unlock = max(0, int(draft.get("pvp_before_unlock", 1)))
     return (
         "<b>House Config</b>\n\n"
         f"House is currently {state}.\n"
@@ -774,7 +774,7 @@ def _house_cfg_keyboard(draft: dict):
             [
                 InlineKeyboardButton("−", callback_data="hc:unlockminus"),
                 InlineKeyboardButton(
-                    f"PvP before unlock: {max(1, int(draft.get('pvp_before_unlock', 1)))}",
+                    f"PvP before unlock: {max(0, int(draft.get('pvp_before_unlock', 1)))}",
                     callback_data="hc:noop",
                 ),
                 InlineKeyboardButton("+", callback_data="hc:unlockplus"),
@@ -797,7 +797,7 @@ async def houseconfig_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     _house_cfg_draft[chat.id] = {
         "house_enabled": settings["house_enabled"],
         "max_plays_per_day": settings["max_plays_per_day"],
-        "pvp_before_unlock": max(1, int(settings.get("pvp_before_unlock", 1))),
+        "pvp_before_unlock": max(0, int(settings.get("pvp_before_unlock", 1))),
     }
     await context.bot.send_message(
         chat.id,
@@ -835,9 +835,9 @@ async def houseconfig_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif action == "nolimit":
         draft["max_plays_per_day"] = None
     elif action == "unlockplus":
-        draft["pvp_before_unlock"] = min(20, max(1, int(draft.get("pvp_before_unlock", 1))) + 1)
+        draft["pvp_before_unlock"] = min(20, max(0, int(draft.get("pvp_before_unlock", 1))) + 1)
     elif action == "unlockminus":
-        draft["pvp_before_unlock"] = max(1, int(draft.get("pvp_before_unlock", 1)) - 1)
+        draft["pvp_before_unlock"] = max(0, int(draft.get("pvp_before_unlock", 1)) - 1)
     elif action == "save":
         await db.save_house_settings(
             chat.id,
