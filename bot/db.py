@@ -31,65 +31,6 @@ async def close() -> None:
         _pool = None
 
 
-def _default_pvp_settings() -> dict:
-    return {
-        "base_2": 5,
-        "bonus_2": 1,
-        "base_3": 5,
-        "bonus_3": 2,
-        "base_4": 5,
-        "bonus_4": 3,
-        "house_risk": 0,
-        "house_reward": 0,
-        "joker_points": -5,
-    }
-
-
-async def get_pvp_settings(chat_id: int) -> dict:
-    row = await pool().fetchrow(
-        """SELECT base_2, bonus_2, base_3, bonus_3, base_4, bonus_4,
-                  house_risk, house_reward, joker_points
-           FROM pvp_settings WHERE chat_id = $1""",
-        chat_id,
-    )
-    if row is None:
-        return _default_pvp_settings()
-    return dict(row)
-
-
-def house_rr_active(settings: dict) -> bool:
-    return int(settings.get("house_risk", 0) or 0) > 0 or int(
-        settings.get("house_reward", 0) or 0
-    ) > 0
-
-
-async def save_pvp_settings(chat_id: int, settings: dict) -> None:
-    defaults = _default_pvp_settings()
-    values = {**defaults, **settings}
-    await pool().execute(
-        """INSERT INTO pvp_settings (
-               chat_id, base_2, bonus_2, base_3, bonus_3, base_4, bonus_4,
-               house_risk, house_reward, joker_points
-           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-           ON CONFLICT (chat_id) DO UPDATE SET
-               base_2=EXCLUDED.base_2,
-               bonus_2=EXCLUDED.bonus_2,
-               base_3=EXCLUDED.base_3,
-               bonus_3=EXCLUDED.bonus_3,
-               base_4=EXCLUDED.base_4,
-               bonus_4=EXCLUDED.bonus_4,
-               house_risk=EXCLUDED.house_risk,
-               house_reward=EXCLUDED.house_reward,
-               joker_points=EXCLUDED.joker_points""",
-        chat_id,
-        int(values["base_2"]), int(values["bonus_2"]),
-        int(values["base_3"]), int(values["bonus_3"]),
-        int(values["base_4"]), int(values["bonus_4"]),
-        int(values["house_risk"]), int(values["house_reward"]),
-        int(values["joker_points"]),
-    )
-
-
 async def init_schema() -> None:
     async with pool().acquire() as conn:
         await conn.execute(
