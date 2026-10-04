@@ -172,9 +172,22 @@ async def cards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Could not create the lobby. Try again.")
         return
 
-    house_on = await db.house_enabled(chat.id)
+    # Create the lobby message even if an optional settings lookup fails.
+    # Otherwise the game can remain active in the DB with no visible lobby.
+    try:
+        pvp_settings = await db.get_pvp_settings(chat.id)
+    except Exception:
+        log.exception("Could not load PvP settings while creating lobby")
+        pvp_settings = db._default_pvp_settings()
+
+    try:
+        house_on = await db.house_enabled(chat.id)
+    except Exception:
+        log.exception("Could not load House availability while creating lobby")
+        house_on = False
+
     msg = await update.message.reply_html(
-        lobby_text(players, game["flavor"], await db.get_pvp_settings(chat.id)),
+        lobby_text(players, game["flavor"], pvp_settings),
         reply_markup=lobby_keyboard(game["id"], house_available=house_on),
         disable_web_page_preview=True,
     )
