@@ -172,8 +172,6 @@ async def cards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Could not create the lobby. Try again.")
         return
 
-    # Create the lobby message even if an optional settings lookup fails.
-    # Otherwise the game can remain active in the DB with no visible lobby.
     try:
         pvp_settings = await db.get_pvp_settings(chat.id)
     except Exception:
@@ -186,11 +184,18 @@ async def cards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         log.exception("Could not load House availability while creating lobby")
         house_on = False
 
-    msg = await update.message.reply_html(
-        lobby_text(players, game["flavor"], pvp_settings),
-        reply_markup=lobby_keyboard(game["id"], house_available=house_on),
-        disable_web_page_preview=True,
-    )
+    try:
+        msg = await update.message.reply_html(
+            lobby_text(players, game["flavor"], pvp_settings),
+            reply_markup=lobby_keyboard(game["id"], house_available=house_on),
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        log.exception("Could not send cards lobby message")
+        await db.set_status(game["id"], "expired")
+        await update.message.reply_text("Could not create the lobby. Try again.")
+        return
+
     await db.set_message_id(game["id"], msg.message_id)
     _schedule_expire(context, game["id"], chat.id)
 
@@ -639,11 +644,13 @@ async def cancelcards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     game = await db.active_game(chat.id)
-    if game is None or game["status"] != "waiting":
+    if game is None:
         await _delete_quietly(context.bot, chat.id, message.message_id if message else None)
-        await context.bot.send_message(chat.id, "There is no game waiting to be cancelled.")
+        await context.bot.send_message(chat.id, "There is no active game to be cancelled.")
         return
 
+    # Allow admins to recover an invisible/stuck game even if it was already
+    # marked running before its Telegram messages were successfully posted.
     await db.set_status(game["id"], "expired")
     _cancel_chat_jobs(context, chat.id, game["id"])
     await _delete_quietly(context.bot, chat.id, game["message_id"])
