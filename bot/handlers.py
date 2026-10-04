@@ -1130,7 +1130,7 @@ async def resetlb_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         _cancel_chat_jobs(context, chat.id, game["id"])
         await _delete_quietly(context.bot, chat.id, game["message_id"])
     await _delete_quietly(context.bot, chat.id, query.message.message_id)
-    await context.bot.send_message(chat.id, "Tomochi Card Leaderboard Reset!")
+    await context.bot.send_message(chat.id, "Tomochi Cards Leaderboard Reset!")
 
 
 async def hourly_job(context: ContextTypes.DEFAULT_TYPE) -> None:
