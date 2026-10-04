@@ -20,7 +20,6 @@ from bot.game import (
     lobby_text,
     pvp_base_bonus_for,
     mention,
-    house_result_keyboard,
     pick_flavor,
     reset_keyboard,
     winner_keyboard,
@@ -90,12 +89,10 @@ async def _delete_quietly(bot, chat_id: int, message_id: int | None) -> None:
 
 
 def _custom_emoji(emoji_id: str, fallback: str) -> str:
-    """Return Telegram HTML for a custom emoji with its Unicode fallback."""
     return f'<tg-emoji emoji-id="{emoji_id}">{fallback}</tg-emoji>'
 
 
 def _superscript_movement(movement: int) -> str:
-    """Format rank movement as Unicode superscript, e.g. ⁻³ or ⁺²."""
     digits = str(abs(movement)).translate(str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹"))
     return ("⁺" if movement > 0 else "⁻") + digits if movement else ""
 
@@ -103,18 +100,19 @@ def _superscript_movement(movement: int) -> str:
 def _leaderboard_html(rows, show_house: bool = False) -> str:
     if not rows:
         return "No games yet. Start one with /cards."
-    lines = ["<b>Tomochi Cards Leaderboard</b>", ""]
-    if show_house:
-        lines.append("H(House) W(Wins) L(Loss) P(Plays)")
-        lines.append("")
 
-    # Telegram custom emoji IDs for leaderboard movement badges.
+    lines = ["<b>Tomochi Cards Leaderboard</b>", "", "H(House) W(Wins) P(Plays)", ""]
+    ranked = list(enumerate(rows, start=1))
+    top_score = int(rows[0]["score"]) if rows else 0
+    sole_leader = len(rows) == 1 or top_score > int(rows[1]["score"])
+
     crown = _custom_emoji("5962786385042610279", "👑")
     up_arrow = _custom_emoji("5908854201533867501", "⬆️")
     down_arrow = _custom_emoji("5908957778965177126", "⬇️")
-    new_badge = _custom_emoji("5911212056974991641", "🆕")
-    still_badge = _custom_emoji("5883953450030472158", "🥱")
-    last_badge = _custom_emoji("5882040570381081275", "😵")
+    new_symbol = _custom_emoji("5911212056974991641", "🆕")
+    new_lb = _custom_emoji("5881746330761568743", "👋")
+    still_lb = _custom_emoji("5883953450030472158", "🥱")
+    last_lb = _custom_emoji("5882040570381081275", "😵")
 
     up_badges = {
         1: ("5882040965518074383", "😙"),
@@ -141,10 +139,6 @@ def _leaderboard_html(rows, show_house: bool = False) -> str:
         10: ("5962930348051404923", "🪖"),
     }
 
-    ranked = list(enumerate(rows, start=1))
-    top_score = int(rows[0]["score"]) if rows else 0
-    sole_leader = len(rows) == 1 or top_score > int(rows[1]["score"])
-
     for i, row in ranked:
         prev_rank = row["prev_rank"]
         prev_score = row["prev_score"]
@@ -155,21 +149,21 @@ def _leaderboard_html(rows, show_house: bool = False) -> str:
 
         if i == 1 and sole_leader:
             lb_badge = crown
-        elif is_new:
-            lb_badge = new_badge
         elif is_last:
-            lb_badge = last_badge
+            lb_badge = last_lb
+        elif is_new:
+            lb_badge = new_lb
         elif movement > 0:
-            emoji_id, fallback = up_badges.get(min(movement, 10), up_badges[10])
+            emoji_id, fallback = up_badges[min(movement, 10)]
             lb_badge = _custom_emoji(emoji_id, fallback)
         elif movement < 0:
-            emoji_id, fallback = down_badges.get(min(abs(movement), 10), down_badges[10])
+            emoji_id, fallback = down_badges[min(abs(movement), 10)]
             lb_badge = _custom_emoji(emoji_id, fallback)
         else:
-            lb_badge = still_badge
+            lb_badge = still_lb
 
         if is_new:
-            position_symbol = new_badge
+            position_symbol = new_symbol
             movement_text = ""
         elif movement > 0:
             position_symbol = up_arrow
@@ -184,18 +178,11 @@ def _leaderboard_html(rows, show_house: bool = False) -> str:
         who = mention(row["username"], row["first_name"], row["user_id"])
         wins = int(row["wins"])
         played = int(row["played"])
-        losses = max(0, played - wins)
-        if show_house:
-            wins += int(row["house_wins"] or 0)
-            losses += int(row["house_losses"] or 0)
-            played += int(row["house_played"] or 0)
-            house_pts = int(row["house_points"] or 0)
-            stats = f"Score: {score} (H:{house_pts}) | W:{wins} | L:{losses} | P:{played}"
-        else:
-            stats = f"Score: {score} | W:{wins} | L:{losses} | P:{played}"
+        house_pts = int(row["house_points"] or 0)
+        stats = f"Score: {score} (H:{house_pts}) | W:{wins} | P:{played}"
+        movement_prefix = f"{movement_text}{lb_badge}" if movement_text else lb_badge
+        lines.append(f"<b>{i}.</b> {who}\n{movement_prefix} {position_symbol} <b>{stats}</b>")
 
-        movement_prefix = f"{movement_text}{lb_badge} " if movement_text else f"{lb_badge} "
-        lines.append(f"<b>{i}.</b> {who}\n{movement_prefix}{position_symbol} <b>{stats}</b>")
     return "\n".join(lines)
 
 
@@ -455,6 +442,17 @@ async def house_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await query.answer("House challenges are disabled in this group.", show_alert=True)
         return
 
+    required_pvp = int(settings.get("pvp_before_unlock", 1) or 0)
+    if required_pvp > 0:
+        completed_pvp = await db.pvp_games_played(group_chat.id, user.id)
+        if completed_pvp < required_pvp:
+            await query.answer(
+                f"You must complete at least {required_pvp} PvP game"
+                f"{"s" if required_pvp != 1 else ""} (2–4 players) in this group before you can challenge the House.",
+                show_alert=True,
+            )
+            return
+
     max_plays = settings["max_plays_per_day"]
     pvp = await db.get_pvp_settings(group_chat.id)
     rr_on = db.house_rr_active(pvp)
@@ -575,11 +573,10 @@ async def _run_house_challenge(
         chat_id,
         result,
         parse_mode="HTML",
-        reply_markup=winner_keyboard() if rr_on else house_result_keyboard(),
+        reply_markup=winner_keyboard(),
         disable_web_page_preview=True,
     )
 
-    await db.bump_house_stats(chat_id, player, player_won)
     if rr_on and delta:
         await db.apply_pvp_score_delta(chat_id, player, delta)
     await db.set_status(game_id, "finished")
@@ -703,12 +700,13 @@ _house_cfg_draft: dict[int, dict] = {}
 def _house_cfg_text(draft: dict) -> str:
     plays = draft.get("max_plays_per_day")
     plays_label = "No limit" if plays is None else str(plays)
+    unlock = int(draft.get("pvp_before_unlock", 1))
     state = "enabled" if draft.get("house_enabled") else "disabled"
     return (
         "<b>House Config</b>\n\n"
         f"House is currently {state}.\n"
-        f"User max plays per day: {plays_label}\n\n"
-        "  "
+        f"User max plays per day: {plays_label}\n"
+        f"PvP before unlock: {unlock}\n\n"
     )
 
 
@@ -724,56 +722,15 @@ def _house_cfg_keyboard(draft: dict):
                 InlineKeyboardButton("No limit", callback_data="hc:nolimit"),
                 InlineKeyboardButton("+", callback_data="hc:plus"),
             ],
+            [
+                InlineKeyboardButton("PvP −", callback_data="hc:pvpminus"),
+                InlineKeyboardButton(str(int(draft.get("pvp_before_unlock", 1))), callback_data="hc:pvpnoop"),
+                InlineKeyboardButton("PvP +", callback_data="hc:pvpplus"),
+            ],
             [InlineKeyboardButton("Save", callback_data="hc:save")],
         ]
     )
 
-
-def _house_lb_html(rows) -> str:
-    if not rows:
-        return "No House games yet."
-    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-    lines = ["<b>House Leaderboard</b>", ""]
-    for i, row in enumerate(rows, start=1):
-        prefix = medals.get(i, f"{i}.")
-        who = mention(row["username"], row["first_name"], row["user_id"])
-        lines.append(
-            f"{prefix} {who}\n"
-            f"Wins: {row['wins']} | Losses: {row['losses']} | Played: {row['played']}"
-        )
-    return "\n".join(lines)
-
-
-async def houselb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat = update.effective_chat
-    if chat.type not in ("group", "supergroup"):
-        await update.message.reply_text("Use /houselb in the group.")
-        return
-    html = _house_lb_html(await db.house_leaderboard(chat.id))
-    await update.message.reply_html(html, disable_web_page_preview=True)
-
-
-async def showhouselb_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    chat = query.message.chat
-    html = _house_lb_html(await db.house_leaderboard(chat.id))
-    await context.bot.send_message(
-        chat.id, html, parse_mode="HTML", disable_web_page_preview=True
-    )
-
-
-async def resethouse_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat = update.effective_chat
-    user = update.effective_user
-    message = update.effective_message
-    if chat.type not in ("group", "supergroup"):
-        return
-    await _delete_quietly(context.bot, chat.id, message.message_id if message else None)
-    if not await _is_admin(context, chat.id, user.id):
-        return
-    await db.reset_house_stats(chat.id)
-    await context.bot.send_message(chat.id, "House Leaderboard Reset!")
 
 
 async def houseconfig_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -789,6 +746,7 @@ async def houseconfig_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     _house_cfg_draft[chat.id] = {
         "house_enabled": settings["house_enabled"],
         "max_plays_per_day": settings["max_plays_per_day"],
+        "pvp_before_unlock": settings.get("pvp_before_unlock", 1),
     }
     await context.bot.send_message(
         chat.id,
@@ -806,7 +764,7 @@ async def houseconfig_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.answer("Admins only.", show_alert=True)
         return
     draft = _house_cfg_draft.setdefault(
-        chat.id, {"house_enabled": True, "max_plays_per_day": None}
+        chat.id, {"house_enabled": True, "max_plays_per_day": None, "pvp_before_unlock": 1}
     )
     action = query.data.split(":", 1)[1]
     if action == "toggle":
@@ -822,9 +780,18 @@ async def houseconfig_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             draft["max_plays_per_day"] = current - 1
     elif action == "nolimit":
         draft["max_plays_per_day"] = None
+    elif action == "pvpminus":
+        draft["pvp_before_unlock"] = max(0, int(draft.get("pvp_before_unlock", 1)) - 1)
+    elif action == "pvpplus":
+        draft["pvp_before_unlock"] = min(20, int(draft.get("pvp_before_unlock", 1)) + 1)
+    elif action == "pvpnoop":
+        pass
     elif action == "save":
         await db.save_house_settings(
-            chat.id, draft["house_enabled"], draft.get("max_plays_per_day")
+            chat.id,
+            draft["house_enabled"],
+            draft.get("max_plays_per_day"),
+            draft.get("pvp_before_unlock", 1),
         )
         await query.answer("Saved.")
         await query.edit_message_text(
@@ -951,9 +918,8 @@ async def pvpconfig_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def _cards_lb(chat_id: int) -> str:
-    settings = await db.get_pvp_settings(chat_id)
     rows = await db.leaderboard(chat_id)
-    return _leaderboard_html(rows, show_house=db.house_rr_active(settings))
+    return _leaderboard_html(rows)
 
 
 async def lb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

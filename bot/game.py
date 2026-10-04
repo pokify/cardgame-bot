@@ -72,12 +72,6 @@ def winner_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def house_result_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("House Leaderboard", callback_data="showhouselb")]]
-    )
-
-
 def reset_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
