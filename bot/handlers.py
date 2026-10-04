@@ -180,12 +180,15 @@ def _leaderboard_html(rows, show_house: bool = False) -> str:
         played = int(row["played"])
         house_pts = int(row["house_points"] or 0)
         stats = f"Score: {score} (H:{house_pts}) | W:{wins} | P:{played}"
-        # Reserve a fixed visual slot for rank movement so every leaderboard
-        # emoji starts in the same column, whether a superscript is present or not.
-        movement_width = len(movement_text)
-        movement_pad = "&ensp;" * max(0, 3 - movement_width)
-        movement_prefix = f"{movement_text}{movement_pad}{lb_badge}"
-        # Keep the lb emoji, movement symbol and score touching horizontally.
+        # Reserve a fixed-width Unicode figure space when there is no
+        # movement superscript, so every LB emoji starts in the same column.
+        # When a superscript exists, it touches the LB emoji with no gap.
+        movement_prefix = (
+            f"{movement_text}{lb_badge}"
+            if movement_text
+            else f"\u2007{lb_badge}"
+        )
+        # LB emoji, movement symbol, and score remain directly adjacent.
         lines.append(f"<b>    {i}.</b> {who}\n{movement_prefix}{position_symbol}<b>{stats}</b>")
 
     return "\n".join(lines)
