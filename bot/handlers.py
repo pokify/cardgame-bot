@@ -201,7 +201,7 @@ def _leaderboard_html(rows, show_house: bool = True) -> str:
             elif movement < 0:
                 position = _tg_emoji(LB_RANK_DOWN, "⬇️")
             else:
-                position = "&lt;&gt;"
+                position = "<>"
             prefix = _movement_prefix(movement, lb_id, lb_fallback, position)
 
         who = mention(row["username"], row["first_name"], row["user_id"])
@@ -488,7 +488,7 @@ async def house_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await query.answer("House challenges are disabled in this group.", show_alert=True)
         return
 
-    required_pvp = max(0, int(settings.get("pvp_before_unlock", 1)))
+    required_pvp = max(1, int(settings.get("pvp_before_unlock", 1)))
     pvp_played = await db.pvp_games_played(group_chat.id, user.id)
     if pvp_played < required_pvp:
         game_word = "game" if required_pvp == 1 else "games"
@@ -598,21 +598,25 @@ async def _run_house_challenge(
 
     player_won = winner["user_id"] == player["user_id"]
     pvp = await db.get_pvp_settings(chat_id)
-    rr_on = db.house_rr_active(pvp)
-    delta = 0
-    if rr_on:
-        delta = int(pvp["house_reward"]) if player_won else -int(pvp["house_risk"])
+    risk = int(pvp.get("house_risk") or 0)
+    reward = int(pvp.get("house_reward") or 0)
+    delta = reward if player_won else -risk
+
+    # Commit the House result before posting the result message so that
+    # "View Leaderboard" always sees the finished House result immediately.
+    if delta:
+        await db.apply_house_score_delta(chat_id, player, delta, player_won)
 
     if player_won:
         result = f"{player_tag} highest score, you win! 😤\n\nHouse will get you next time!"
-        if rr_on:
+        if delta:
             result += f"\n\n+{delta} points!"
     else:
         result = (
             f"{player_tag} you lose! Never bet against the House! "
             "Better luck next time! 😗"
         )
-        if rr_on:
+        if delta:
             result += f"\n\n{delta} points!"
 
     await context.bot.send_message(
@@ -623,8 +627,6 @@ async def _run_house_challenge(
         disable_web_page_preview=True,
     )
 
-    if rr_on and delta:
-        await db.apply_pvp_score_delta(chat_id, player, delta)
     await db.set_status(game_id, "finished")
 
 
@@ -749,7 +751,7 @@ def _house_cfg_text(draft: dict) -> str:
     plays = draft.get("max_plays_per_day")
     plays_label = "No limit" if plays is None else str(plays)
     state = "enabled" if draft.get("house_enabled") else "disabled"
-    unlock = max(0, int(draft.get("pvp_before_unlock", 1)))
+    unlock = max(1, int(draft.get("pvp_before_unlock", 1)))
     return (
         "<b>House Config</b>\n\n"
         f"House is currently {state}.\n"
@@ -774,7 +776,7 @@ def _house_cfg_keyboard(draft: dict):
             [
                 InlineKeyboardButton("−", callback_data="hc:unlockminus"),
                 InlineKeyboardButton(
-                    f"PvP before unlock: {max(0, int(draft.get('pvp_before_unlock', 1)))}",
+                    f"PvP before unlock: {max(1, int(draft.get('pvp_before_unlock', 1)))}",
                     callback_data="hc:noop",
                 ),
                 InlineKeyboardButton("+", callback_data="hc:unlockplus"),
@@ -797,7 +799,7 @@ async def houseconfig_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     _house_cfg_draft[chat.id] = {
         "house_enabled": settings["house_enabled"],
         "max_plays_per_day": settings["max_plays_per_day"],
-        "pvp_before_unlock": max(0, int(settings.get("pvp_before_unlock", 1))),
+        "pvp_before_unlock": max(1, int(settings.get("pvp_before_unlock", 1))),
     }
     await context.bot.send_message(
         chat.id,
@@ -835,9 +837,9 @@ async def houseconfig_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif action == "nolimit":
         draft["max_plays_per_day"] = None
     elif action == "unlockplus":
-        draft["pvp_before_unlock"] = min(20, max(0, int(draft.get("pvp_before_unlock", 1))) + 1)
+        draft["pvp_before_unlock"] = min(20, max(1, int(draft.get("pvp_before_unlock", 1))) + 1)
     elif action == "unlockminus":
-        draft["pvp_before_unlock"] = max(0, int(draft.get("pvp_before_unlock", 1)) - 1)
+        draft["pvp_before_unlock"] = max(1, int(draft.get("pvp_before_unlock", 1)) - 1)
     elif action == "save":
         await db.save_house_settings(
             chat.id,
