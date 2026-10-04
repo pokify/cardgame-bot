@@ -101,7 +101,8 @@ async def init_schema() -> None:
                 chat_id          BIGINT PRIMARY KEY,
                 limit_enabled    BOOLEAN NOT NULL DEFAULT FALSE,
                 house_enabled    BOOLEAN NOT NULL DEFAULT TRUE,
-                max_plays_per_day INTEGER
+                max_plays_per_day INTEGER,
+                pvp_before_unlock INTEGER NOT NULL DEFAULT 1
             )
             """
         )
@@ -112,18 +113,7 @@ async def init_schema() -> None:
             "ALTER TABLE house_settings ADD COLUMN IF NOT EXISTS max_plays_per_day INTEGER"
         )
         await conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS house_stats (
-                chat_id     BIGINT NOT NULL,
-                user_id     BIGINT NOT NULL,
-                username    TEXT,
-                first_name  TEXT,
-                wins        INTEGER NOT NULL DEFAULT 0,
-                losses      INTEGER NOT NULL DEFAULT 0,
-                played      INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (chat_id, user_id)
-            )
-            """
+            "ALTER TABLE house_settings ADD COLUMN IF NOT EXISTS pvp_before_unlock INTEGER NOT NULL DEFAULT 1"
         )
         await conn.execute(
             """
@@ -386,13 +376,8 @@ async def leaderboard(chat_id: int, limit: int = 15) -> list[asyncpg.Record]:
     # (incumbent stays ahead of someone who only just tied them).
     return await pool().fetch(
         """
-        SELECT ps.*,
-               COALESCE(hs.wins, 0) AS house_wins,
-               COALESCE(hs.losses, 0) AS house_losses,
-               COALESCE(hs.played, 0) AS house_played
+        SELECT ps.*
         FROM player_stats ps
-        LEFT JOIN house_stats hs
-          ON hs.chat_id = ps.chat_id AND hs.user_id = ps.user_id
         WHERE ps.chat_id = $1
         ORDER BY ps.score DESC, ps.wins DESC, ps.played ASC,
                  COALESCE(ps.prev_rank, 2147483647) ASC, ps.user_id ASC
@@ -425,6 +410,11 @@ async def reset_group(chat_id: int) -> list[asyncpg.Record]:
             )
             await conn.execute(
                 "DELETE FROM player_stats WHERE chat_id = $1",
+                chat_id,
+            )
+            # /clearlb also resets House daily challenge usage.
+            await conn.execute(
+                "DELETE FROM house_challenges WHERE chat_id = $1",
                 chat_id,
             )
             return list(games)
@@ -469,32 +459,56 @@ async def consume_house_challenge(chat_id: int, user_id: int, max_plays: int) ->
 
 async def get_house_settings(chat_id: int) -> dict:
     row = await pool().fetchrow(
-        "SELECT house_enabled, max_plays_per_day FROM house_settings WHERE chat_id = $1",
+        "SELECT house_enabled, max_plays_per_day, pvp_before_unlock "
+        "FROM house_settings WHERE chat_id = $1",
         chat_id,
     )
     if row is None:
-        return {"house_enabled": True, "max_plays_per_day": None}
+        return {
+            "house_enabled": True,
+            "max_plays_per_day": None,
+            "pvp_before_unlock": 1,
+        }
     return {
         "house_enabled": bool(row["house_enabled"]),
         "max_plays_per_day": row["max_plays_per_day"],
+        "pvp_before_unlock": max(1, int(row["pvp_before_unlock"] or 1)),
     }
 
 
-async def save_house_settings(chat_id: int, house_enabled: bool, max_plays_per_day: int | None) -> None:
+async def save_house_settings(
+    chat_id: int,
+    house_enabled: bool,
+    max_plays_per_day: int | None,
+    pvp_before_unlock: int = 1,
+) -> None:
+    pvp_before_unlock = max(1, min(20, int(pvp_before_unlock)))
     await pool().execute(
         """
-        INSERT INTO house_settings (chat_id, house_enabled, max_plays_per_day, limit_enabled)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO house_settings
+            (chat_id, house_enabled, max_plays_per_day, limit_enabled, pvp_before_unlock)
+        VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT (chat_id) DO UPDATE SET
             house_enabled = EXCLUDED.house_enabled,
             max_plays_per_day = EXCLUDED.max_plays_per_day,
-            limit_enabled = EXCLUDED.limit_enabled
+            limit_enabled = EXCLUDED.limit_enabled,
+            pvp_before_unlock = EXCLUDED.pvp_before_unlock
         """,
         chat_id,
         house_enabled,
         max_plays_per_day,
         max_plays_per_day is not None,
+        pvp_before_unlock,
     )
+
+
+async def pvp_games_played(chat_id: int, user_id: int) -> int:
+    row = await pool().fetchrow(
+        "SELECT played FROM player_stats WHERE chat_id = $1 AND user_id = $2",
+        chat_id,
+        user_id,
+    )
+    return int(row["played"]) if row else 0
 
 
 async def house_enabled(chat_id: int) -> bool:
@@ -546,45 +560,6 @@ async def banned_cards(chat_id: int, mode: str) -> list[str]:
     for row in rows:
         out.extend(list(row["cards"] or []))
     return out
-
-
-async def bump_house_stats(chat_id: int, player: dict, won: bool) -> None:
-    await pool().execute(
-        """
-        INSERT INTO house_stats
-            (chat_id, user_id, username, first_name, wins, losses, played)
-        VALUES ($1, $2, $3, $4, $5, $6, 1)
-        ON CONFLICT (chat_id, user_id) DO UPDATE SET
-            username = EXCLUDED.username,
-            first_name = EXCLUDED.first_name,
-            wins = house_stats.wins + EXCLUDED.wins,
-            losses = house_stats.losses + EXCLUDED.losses,
-            played = house_stats.played + 1
-        """,
-        chat_id,
-        player["user_id"],
-        player["username"],
-        player["first_name"],
-        1 if won else 0,
-        0 if won else 1,
-    )
-
-
-async def house_leaderboard(chat_id: int, limit: int = 15) -> list[asyncpg.Record]:
-    return await pool().fetch(
-        """
-        SELECT * FROM house_stats
-        WHERE chat_id = $1
-        ORDER BY wins DESC, played ASC, losses ASC, user_id ASC
-        LIMIT $2
-        """,
-        chat_id,
-        limit,
-    )
-
-
-async def reset_house_stats(chat_id: int) -> None:
-    await pool().execute("DELETE FROM house_stats WHERE chat_id = $1", chat_id)
 
 
 def _default_pvp_settings() -> dict:
