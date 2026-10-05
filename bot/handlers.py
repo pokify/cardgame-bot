@@ -264,13 +264,14 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
     user = update.effective_user
+    message = update.effective_message
     if chat.type not in ("group", "supergroup"):
-        await update.message.reply_text("Start a game in a group with /cards.")
+        await message.reply_text("Start a game in a group with /cards.")
         return
 
     existing = await db.active_game(chat.id)
     if existing:
-        await update.message.reply_text("A game is already in progress in this chat.")
+        await message.reply_text("A game is already in progress in this chat.")
         return
 
     standing = await db.caller_standing(chat.id, user.id)
@@ -281,7 +282,7 @@ async def cards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     if not ok:
         await db.set_status(game["id"], "expired")
-        await update.message.reply_text("Could not create the lobby. Try again.")
+        await message.reply_text("Could not create the lobby. Try again.")
         return
 
     try:
@@ -297,7 +298,7 @@ async def cards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         house_on = False
 
     try:
-        msg = await update.message.reply_html(
+        msg = await message.reply_html(
             lobby_text(players, game["flavor"], pvp_settings),
             reply_markup=lobby_keyboard(game["id"], house_available=house_on),
             disable_web_page_preview=True,
@@ -305,7 +306,7 @@ async def cards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception:
         log.exception("Could not send cards lobby message")
         await db.set_status(game["id"], "expired")
-        await update.message.reply_text("Could not create the lobby. Try again.")
+        await message.reply_text("Could not create the lobby. Try again.")
         return
 
     await db.set_message_id(game["id"], msg.message_id)

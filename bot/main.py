@@ -28,6 +28,7 @@ from bot.handlers import (
     lb_cmd,
     pvpconfig_cb,
     pvpconfig_cmd,
+    playcards_cb,
     resetlb_cb,
     resetlb_cmd,
     restore_jobs,
