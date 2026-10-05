@@ -216,6 +216,28 @@ def _leaderboard_html(rows, show_house: bool = True) -> str:
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat.type == "private":
+        args = context.args or []
+        if args and args[0].startswith("gamemode_"):
+            raw_gid = args[0][len("gamemode_"):]
+            try:
+                gid = int(raw_gid)
+            except ValueError:
+                gid = None
+
+            if gid is not None and await _is_admin(
+                context, gid, update.effective_user.id
+            ):
+                context.user_data["gamemode_chat_id"] = gid
+                mode = await db.get_game_mode(gid)
+                await update.message.reply_html(
+                    _gm_menu_text(mode),
+                    reply_markup=_gm_menu_keyboard(gid, mode),
+                )
+                return
+
+            await update.message.reply_text("Admins only.")
+            return
+
         await update.message.reply_text(
             "Add me to a group, then use /cards to start a lobby and /cardslb for scores."
         )
@@ -1253,17 +1275,58 @@ async def bump_lobby_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 
-async def gamemode_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
-    chat=update.effective_chat; user=update.effective_user
-    if chat.type not in ("group","supergroup"): return
-    if not await _is_admin(context,chat.id,user.id):
-        await _delete_quietly(context.bot,chat.id,update.effective_message.message_id); return
-    mode=await db.get_game_mode(chat.id)
-    try:
-        await context.bot.send_message(user.id,_gm_menu_text(mode),parse_mode="HTML",reply_markup=_gm_menu_keyboard(chat.id,mode))
-        await _delete_quietly(context.bot,chat.id,update.effective_message.message_id)
-    except Exception:
-        await update.message.reply_text("I couldn't message you privately. Start a private chat with me first, then run /gamemode again.")
+async def gamemode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+    message = update.effective_message
+
+    # /gamemode in a group posts a deep-link button. Telegram cannot force-open
+    # a private chat, so the button takes the admin to the bot's private chat
+    # and carries this group's id with it.
+    if chat.type in ("group", "supergroup"):
+        if not await _is_admin(context, chat.id, user.id):
+            await _delete_quietly(context.bot, chat.id, message.message_id if message else None)
+            return
+
+        username = context.bot.username or "tomochicardbot"
+        url = f"https://t.me/{username}?start=gamemode_{chat.id}"
+        await context.bot.send_message(
+            chat.id,
+            "Start Tomochi Cards game mode",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Open Game Mode", url=url)]
+            ]),
+        )
+        return
+
+    # In private chat, /gamemode operates on the group selected by the
+    # deep-link. This also allows the admin to call /gamemode again privately.
+    if chat.type == "private":
+        gid = context.user_data.get("gamemode_chat_id")
+        if gid is None:
+            await update.message.reply_text(
+                "Open Game Mode from a group first using the Open Game Mode button."
+            )
+            return
+        try:
+            gid = int(gid)
+        except (TypeError, ValueError):
+            await update.message.reply_text(
+                "Open Game Mode from a group first using the Open Game Mode button."
+            )
+            return
+        if not await _is_admin(context, gid, user.id):
+            await update.message.reply_text("Admins only.")
+            return
+
+        mode = await db.get_game_mode(gid)
+        await update.message.reply_html(
+            _gm_menu_text(mode),
+            reply_markup=_gm_menu_keyboard(gid, mode),
+        )
+        return
+
+    return
 
 
 async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
