@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from telegram import InputFile, Update
+from telegram import InputFile, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatMemberStatus
 from telegram.ext import ContextTypes
 
@@ -720,6 +720,7 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
         joker["user_id"] if joker else None,
         joker_points,
     )
+    await _record_mode_after_cards(context, chat_id, players)
 
 
 async def cancelcards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -976,9 +977,185 @@ async def pvpconfig_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
+
+_GAME_MODE_DRAFT: dict[tuple[int,int],dict] = {}
+_MODE_WINNER_EMOJI = '<tg-emoji emoji-id="5882196778341637440">🕺</tg-emoji>'
+
+
+def _gm_cb(group_id:int, action:str)->str:
+    return f"gm:{group_id}:{action}"
+
+
+def _gm_menu_text(mode):
+    if mode and mode.get("active"):
+        label="First to x points" if mode["mode"]=="first" else "Highest Score Wins"
+        return f"<b>Start Tomochi Cards game mode</b>\n\nGame mode active: {label}"
+    if mode and mode.get("pending"):
+        label="First to x points" if mode["mode"]=="first" else "Highest Score Wins"
+        return f"<b>Start Tomochi Cards game mode</b>\n\nSaved: {label}\nGame begins after next completed /cards game."
+    return "<b>Start Tomochi Cards game mode</b>"
+
+
+def _gm_menu_keyboard(group_id:int,mode):
+    if mode and mode.get("active"):
+        rows=[[InlineKeyboardButton("Highest Score Wins",callback_data=_gm_cb(group_id,"highest")),
+               InlineKeyboardButton("First to x Score",callback_data=_gm_cb(group_id,"first"))]]
+    else:
+        rows=[[InlineKeyboardButton("Start New Game",callback_data=_gm_cb(group_id,"new"))]]
+    return InlineKeyboardMarkup(rows)
+
+
+def _gm_control_text(mode):
+    label="First to x points" if mode["mode"]=="first" else "Highest Score Wins"
+    value=f"Target: {int(mode['target'])}" if mode["mode"]=="first" else f"Days: {int(mode['days'])}"
+    return f"<b>{label}</b>\n\nControls:\n{value}"
+
+
+async def _gm_control_keyboard(group_id:int,mode):
+    rows=[]
+    if mode.get("active"):
+        rows.append([InlineKeyboardButton("End Current Game",callback_data=_gm_cb(group_id,"end"))])
+        label="Reset game keep current target" if mode["mode"]=="first" else "Restart game clear leaderboard"
+        rows.append([InlineKeyboardButton(label,callback_data=_gm_cb(group_id,"restart"))])
+        if await db.game_mode_history_exists(group_id,mode["mode"]):
+            rows.append([InlineKeyboardButton("clear winners history",callback_data=_gm_cb(group_id,f"history:{mode['mode']}"))])
+    rows.append([InlineKeyboardButton("Back",callback_data=_gm_cb(group_id,"menu"))])
+    return InlineKeyboardMarkup(rows)
+
+
+def _gm_start_text(mode:str,value:int)->str:
+    if mode=="first":
+        return f"<b>Game mode: First to x points</b>\n\nPlayer to reach target point first wins.\n\nTarget: {value}"
+    return f"<b>Game mode: Highest Score Wins</b>\n\nHighest score wins after set amount of days\n\nDays : {value}"
+
+
+def _gm_digit_keyboard(group_id:int,mode:str):
+    p=mode
+    rows=[]
+    for nums in (("1","2","3"),("4","5","6"),("7","8","9")):
+        rows.append([InlineKeyboardButton(n,callback_data=_gm_cb(group_id,f"digit:{p}:{n}")) for n in nums])
+    rows.append([
+        InlineKeyboardButton("<",callback_data=_gm_cb(group_id,f"digit:{p}:del")),
+        InlineKeyboardButton("0",callback_data=_gm_cb(group_id,f"digit:{p}:0")),
+    ])
+    rows.append([
+        InlineKeyboardButton("Save",callback_data=_gm_cb(group_id,f"save:{p}")),
+        InlineKeyboardButton("Cancel",callback_data=_gm_cb(group_id,"menu"))
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _activate_pending_mode_after_cards(context,chat_id:int):
+    mode=await db.get_game_mode(chat_id)
+    if not mode or not mode.get("pending") or mode.get("active"):
+        return
+    mode=await db.activate_game_mode(chat_id)
+    if mode and mode["mode"]=="highest":
+        _schedule_mode_end(context,chat_id,mode)
+
+
+def _schedule_mode_end(context,chat_id:int,mode:dict):
+    if mode.get("winner_user_id"):
+        return
+    for job in context.job_queue.get_jobs_by_name(f"modeend:{chat_id}"):
+        job.schedule_removal()
+    if not mode.get("ends_at"):
+        return
+    remaining=max(1,(mode["ends_at"]-datetime.now(timezone.utc)).total_seconds())
+    context.job_queue.run_once(mode_end_job,when=remaining,data={"chat_id":chat_id},name=f"modeend:{chat_id}",chat_id=chat_id)
+
+
+async def _mode_announce_winner(context,chat_id:int,mode:dict):
+    username=mode.get("winner_username") or str(mode.get("winner_user_id"))
+    score=int(mode.get("winner_score") or 0)
+    if mode["mode"]=="first":
+        text=f"Target met!\nTomochi Cards Winner! {_MODE_WINNER_EMOJI}\n<b>@{username}</b> ({score}) points!\n\nNo1 rank locked.\n\nview /history"
+    else:
+        days=int(mode.get("days") or 0)
+        duration=f"{days*24}hrs" if days in (1,2,3) else f"{days} days"
+        text=f"Highest score game over!\nTomochi Cards Winner! {_MODE_WINNER_EMOJI}\n<b>@{username}</b> claims highest score ({score}) after {duration}.\n\nNo1 rank locked.\n\nview /history"
+    await context.bot.send_message(chat_id,text,parse_mode="HTML")
+
+
+async def mode_end_job(context:ContextTypes.DEFAULT_TYPE):
+    chat_id=(context.job.data or {}).get("chat_id")
+    if not chat_id: return
+    mode=await db.highest_score_winner(chat_id)
+    if mode and mode.get("winner_user_id"):
+        await _mode_announce_winner(context,chat_id,mode)
+
+
+async def _record_mode_after_cards(context,chat_id:int,players:list):
+    mode=await db.get_game_mode(chat_id)
+    if not mode or not mode.get("active"):
+        await _activate_pending_mode_after_cards(context,chat_id)
+        return
+    await db.game_mode_participation(chat_id,mode["mode"],players)
+    if mode["mode"]=="first":
+        winner=await db.check_first_to_winner(chat_id)
+        if winner:
+            await _mode_announce_winner(context,chat_id,winner)
+
+
+def _mode_status_html(mode:dict,rows:list)->str:
+    if not mode or not mode.get("active"): return ""
+    if mode["mode"]=="first":
+        target=int(mode["target"] or 0)
+        leader=max((int(r["score"]) for r in rows),default=0)
+        progress=0 if target<=0 else min(100,int(leader*100/target))
+        lines=[f"<b>Game: First to score {target} points</b>",f"Progress: {progress}%"]
+    else:
+        if mode.get("winner_user_id"):
+            end="Ended"
+        else:
+            ends=mode.get("ends_at")
+            remaining=(ends-datetime.now(timezone.utc)).total_seconds() if ends else 0
+            if remaining<=0: end="Ended"
+            elif remaining<=86400: end=f"{max(1,int((remaining+3599)//3600))}hrs"
+            elif int(mode.get("days") or 0) in (1,2,3): end=f"{int(mode['days'])*24}hrs"
+            else: end=f"{int((remaining+86399)//86400)} days"
+        lines=["<b>Game: Highest Score Wins</b>",f"Ends: {end}"]
+    if mode.get("winner_user_id"):
+        lines.append(f"Winner: @{mode.get('winner_username') or mode['winner_user_id']}")
+    return "\n".join(lines)
+
+
+async def _history_text(chat_id:int)->str:
+    first=await db.game_mode_history(chat_id,"first")
+    high=await db.game_mode_history(chat_id,"highest")
+    if not first and not high:
+        return "No history. Game mode winners history presents here after first winner recorded."
+    def section(title,rows):
+        if not rows: return ""
+        lines=[title,"","         Winners   |     Wins  |    Plays"]
+        last=None; rank=0
+        for n,row in enumerate(rows,1):
+            wins=int(row["wins"])
+            if wins!=last: rank=n; last=wins
+            name=row["username"] or str(row["user_id"])
+            lines.append(f"{rank} {name:<18} {wins:>4} {int(row['plays']):>10}")
+        return "\n".join(lines)
+    sections=[]
+    # Most-played mode first.
+    if first and high:
+        fp=sum(int(r["plays"]) for r in first); hp=sum(int(r["plays"]) for r in high)
+        if hp>fp: sections=[section("Highest Score game mode winners",high),section("First to x Points game mode winners",first)]
+        else: sections=[section("First to x Points game mode winners",first),section("Highest Score game mode winners",high)]
+    else:
+        sections=[section("First to x Points game mode winners",first),section("Highest Score game mode winners",high)]
+    return "<b>Tomochi Cards Winners History</b>\n\n"+"\n\n".join(x for x in sections if x)
+
+
 async def _cards_lb(chat_id: int) -> str:
     rows = await db.leaderboard(chat_id)
-    return _leaderboard_html(rows)
+    html = _leaderboard_html(rows)
+    mode = await db.get_game_mode(chat_id)
+    if mode and mode.get("active") and rows:
+        status = _mode_status_html(mode, rows)
+        if status:
+            parts = html.split("\n\n", 1)
+            html = parts[0] + "\n\n" + status + ("\n\n" + parts[1] if len(parts) == 2 else "")
+    return html
 
 
 async def lb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1075,6 +1252,89 @@ async def bump_lobby_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         await _delete_quietly(context.bot, chat_id, old_id)
 
 
+
+async def gamemode_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
+    chat=update.effective_chat; user=update.effective_user
+    if chat.type not in ("group","supergroup"): return
+    if not await _is_admin(context,chat.id,user.id):
+        await _delete_quietly(context.bot,chat.id,update.effective_message.message_id); return
+    mode=await db.get_game_mode(chat.id)
+    try:
+        await context.bot.send_message(user.id,_gm_menu_text(mode),parse_mode="HTML",reply_markup=_gm_menu_keyboard(chat.id,mode))
+        await _delete_quietly(context.bot,chat.id,update.effective_message.message_id)
+    except Exception:
+        await update.message.reply_text("I couldn't message you privately. Start a private chat with me first, then run /gamemode again.")
+
+
+async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
+    q=update.callback_query; p=q.data.split(":",2)
+    if len(p)<3: await q.answer(); return
+    try: gid=int(p[1])
+    except ValueError: await q.answer(); return
+    if not await _is_admin(context,gid,q.from_user.id):
+        await q.answer("Admins only.",show_alert=True); return
+    action=p[2]; mode=await db.get_game_mode(gid)
+    if action=="menu":
+        await q.answer(); await q.edit_message_text(_gm_menu_text(mode),parse_mode="HTML",reply_markup=_gm_menu_keyboard(gid,mode)); return
+    if action=="new":
+        await q.answer()
+        await q.edit_message_text("<b>Choose game mode</b>",parse_mode="HTML",reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Highest Score Wins",callback_data=_gm_cb(gid,"highest"))],
+            [InlineKeyboardButton("First to x Score",callback_data=_gm_cb(gid,"first"))],
+            [InlineKeyboardButton("Cancel",callback_data=_gm_cb(gid,"menu"))]])); return
+    if action in ("highest","first"):
+        if mode and mode.get("active"):
+            if mode["mode"]!=action:
+                await q.answer("End or reset the current game before choosing another mode.",show_alert=True); return
+            kb=await _gm_control_keyboard(gid,mode)
+            await q.answer(); await q.edit_message_text(_gm_control_text(mode),parse_mode="HTML",reply_markup=kb); return
+        _GAME_MODE_DRAFT[(gid,q.from_user.id)]={"mode":action,"value":0}
+        await q.answer(); await q.edit_message_text(_gm_start_text(action,0),parse_mode="HTML",reply_markup=_gm_digit_keyboard(gid,action)); return
+    if action.startswith("digit:"):
+        _,which,digit=action.split(":",2)
+        draft=_GAME_MODE_DRAFT.setdefault((gid,q.from_user.id),{"mode":which,"value":0})
+        v=int(draft["value"])
+        v=v//10 if digit=="del" else min(999999, v*10+int(digit))
+        draft["value"]=v
+        await q.answer(); await q.edit_message_text(_gm_start_text(which,v),parse_mode="HTML",reply_markup=_gm_digit_keyboard(gid,which)); return
+    if action.startswith("save:"):
+        which=action.split(":",1)[1]; draft=_GAME_MODE_DRAFT.pop((gid,q.from_user.id),{"value":0})
+        v=max(0,int(draft["value"]))
+        await db.save_game_mode_pending(gid,which,v if which=="first" else 0,v if which=="highest" else 0)
+        await q.answer("Saved.")
+        await q.edit_message_text("Saved. Game begins after next completed /cards game.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back",callback_data=_gm_cb(gid,"menu"))]])); return
+    if action in ("end","restart"):
+        if not mode or not mode.get("active"): await q.answer("No active game mode.",show_alert=True); return
+        label="First to x points" if mode["mode"]=="first" else "Highest Score Wins"
+        if action=="end": text=f"end game clear leaderboard\n\nGame mode: {label}\n\nConfirm?"; yes="confirm_end"
+        else: text=("restart current game, clear leaderboard, keep target" if mode["mode"]=="first" else "restart current highest score game, clear leaderboard")+"\n\nConfirm?"; yes="confirm_restart"
+        await q.answer(); await q.edit_message_text(text,reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Confirm",callback_data=_gm_cb(gid,yes)),InlineKeyboardButton("Cancel",callback_data=_gm_cb(gid,"menu"))]])); return
+    if action in ("confirm_end","confirm_restart"):
+        await db.reset_group(gid)
+        if action=="confirm_end":
+            await db.end_game_mode(gid); msg="Game ended and leaderboard cleared."
+        else:
+            await db.reset_game_mode_for_restart(gid); msg="Game restarted. Game begins after next completed /cards game."
+        for job in context.job_queue.get_jobs_by_name(f"modeend:{gid}"): job.schedule_removal()
+        await q.answer(); await q.edit_message_text(msg,reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back",callback_data=_gm_cb(gid,"menu"))]])); return
+    if action.startswith("history:"):
+        which=action.split(":",1)[1]
+        if not await db.game_mode_history_exists(gid,which): await q.answer("No winner history recorded.",show_alert=True); return
+        label="First to x Points" if which=="first" else "Highest Score Wins"
+        await q.answer(); await q.edit_message_text(f"clear {label} history at /history?",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Yes",callback_data=_gm_cb(gid,f"clearhistory:{which}")),InlineKeyboardButton("Cancel",callback_data=_gm_cb(gid,"menu"))]])); return
+    if action.startswith("clearhistory:"):
+        which=action.split(":",1)[1]; await db.clear_game_mode_history(gid,which)
+        await q.answer("History cleared."); await q.edit_message_text("History cleared.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back",callback_data=_gm_cb(gid,"menu"))]])); return
+    await q.answer("Not available.",show_alert=True)
+
+
+async def history_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
+    chat=update.effective_chat
+    if chat.type not in ("group","supergroup"):
+        await update.message.reply_text("Use /history in the group."); return
+    await update.message.reply_html(await _history_text(chat.id),disable_web_page_preview=True)
+
+
 async def resetlb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
     user = update.effective_user
@@ -1085,11 +1345,17 @@ async def resetlb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not await _is_admin(context, chat.id, user.id):
         return
 
-    prompt = await context.bot.send_message(
-        chat.id,
-        "Reset Tomochi Card Leaderboard?\n\nAdmins Only",
-        reply_markup=reset_keyboard(),
-    )
+    mode = await db.get_game_mode(chat.id)
+    if mode and mode.get("active"):
+        label = "First to x points" if mode["mode"] == "first" else "Highest Score Wins"
+        prompt_text = (
+            "Reset Tomochi Cards Leaderboard?\n\nAdmins Only\n\n"
+            f"Game mode: {label} is on. This will also reset lb for current game only. "
+            "To cancel current game enter controls at /gamemode"
+        )
+    else:
+        prompt_text = "Reset Tomochi Card Leaderboard?\n\nAdmins Only"
+    prompt = await context.bot.send_message(chat.id,prompt_text,reply_markup=reset_keyboard())
     jq = context.job_queue
     name = f"resetlb:{chat.id}:{prompt.message_id}"
     jq.run_once(
@@ -1125,12 +1391,20 @@ async def resetlb_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await _delete_quietly(context.bot, chat.id, query.message.message_id)
         return
 
+    mode = await db.get_game_mode(chat.id)
     cancelled = await db.reset_group(chat.id)
     for game in cancelled:
         _cancel_chat_jobs(context, chat.id, game["id"])
         await _delete_quietly(context.bot, chat.id, game["message_id"])
+    if mode and mode.get("active"):
+        await db.reset_game_mode_for_restart(chat.id)
+        for job in context.job_queue.get_jobs_by_name(f"modeend:{chat.id}"):
+            job.schedule_removal()
     await _delete_quietly(context.bot, chat.id, query.message.message_id)
-    await context.bot.send_message(chat.id, "Tomochi Cards Leaderboard Reset!")
+    msg="Tomochi Cards Leaderboard Reset!"
+    if mode and mode.get("active"):
+        msg += "\n\nGame mode will begin again after the next completed /cards game."
+    await context.bot.send_message(chat.id,msg)
 
 
 async def hourly_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1172,6 +1446,14 @@ async def restore_jobs(application) -> None:
             name=name,
             chat_id=game["chat_id"],
         )
+
+    rows = await db.pool().fetch(
+        "SELECT chat_id FROM game_modes WHERE active=TRUE AND mode='highest'"
+    )
+    for row in rows:
+        mode = await db.get_game_mode(int(row["chat_id"]))
+        if mode:
+            _schedule_mode_end(application, int(row["chat_id"]), mode)
 
     if GAME_CHAT_IDS:
         jq.run_repeating(

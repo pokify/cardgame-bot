@@ -18,6 +18,9 @@ from bot.handlers import (
     cards_cmd,
     cancelcards_cmd,
     group_activity,
+    gamemode_cb,
+    gamemode_cmd,
+    history_cmd,
     house_cb,
     houseconfig_cb,
     houseconfig_cmd,
@@ -46,11 +49,15 @@ async def post_init(application: Application) -> None:
     private_commands = [
         BotCommand("cards", "Start Tomochi Cards"),
         BotCommand("cardslb", "Show cards leaderboard"),
+        BotCommand("gamemode", "Set game mode"),
+        BotCommand("history", "Show game mode winners history"),
     ]
     group_commands = [
         BotCommand("cards", "Start Tomochi Cards"),
         BotCommand("cancelcards", "Cancel new game"),
         BotCommand("cardslb", "Show cards leaderboard"),
+        BotCommand("gamemode", "Set game mode"),
+        BotCommand("history", "Show game mode winners history"),
         BotCommand("resetlb", "Reset cards leaderboard"),
         BotCommand("confighouse", "Config house"),
         BotCommand("pvpconfig", "Config game points"),
@@ -87,12 +94,15 @@ def main() -> None:
     app.add_handler(CommandHandler("cards", cards_cmd))
     app.add_handler(CommandHandler("cancelcards", cancelcards_cmd))
     app.add_handler(CommandHandler("cardslb", lb_cmd))
+    app.add_handler(CommandHandler("gamemode", gamemode_cmd))
+    app.add_handler(CommandHandler("history", history_cmd))
     app.add_handler(CommandHandler("resetlb", resetlb_cmd))
     app.add_handler(CommandHandler(["confighouse", "houseconfig"], houseconfig_cmd))
     app.add_handler(CommandHandler("pvpconfig", pvpconfig_cmd))
     app.add_handler(CallbackQueryHandler(join_cb, pattern=r"^join:\d+$"))
     app.add_handler(CallbackQueryHandler(house_cb, pattern=r"^house:\d+$"))
     app.add_handler(CallbackQueryHandler(showlb_cb, pattern=r"^showlb$"))
+    app.add_handler(CallbackQueryHandler(gamemode_cb, pattern=r"^gm:-?\d+:"))
     app.add_handler(CallbackQueryHandler(resetlb_cb, pattern=r"^resetlb:(yes|no)$"))
     app.add_handler(CallbackQueryHandler(houseconfig_cb, pattern=r"^hc:(toggle|plus|minus|nolimit|unlockplus|unlockminus|save|noop)$"))
     app.add_handler(CallbackQueryHandler(pvpconfig_cb, pattern=r"^pc:"))

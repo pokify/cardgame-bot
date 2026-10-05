@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncpg
+from datetime import datetime, timedelta, timezone
 
 from bot.config import normalize_database_url
 
@@ -114,6 +115,36 @@ async def init_schema() -> None:
         )
         await conn.execute(
             "ALTER TABLE house_settings ADD COLUMN IF NOT EXISTS pvp_before_unlock INTEGER NOT NULL DEFAULT 1"
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS game_modes (
+                chat_id BIGINT PRIMARY KEY,
+                mode TEXT NOT NULL,
+                target INTEGER NOT NULL DEFAULT 0,
+                days INTEGER NOT NULL DEFAULT 0,
+                active BOOLEAN NOT NULL DEFAULT FALSE,
+                pending BOOLEAN NOT NULL DEFAULT TRUE,
+                started_at TIMESTAMPTZ,
+                ends_at TIMESTAMPTZ,
+                winner_user_id BIGINT,
+                winner_username TEXT,
+                winner_score INTEGER
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS game_mode_history (
+                chat_id BIGINT NOT NULL,
+                mode TEXT NOT NULL,
+                user_id BIGINT NOT NULL,
+                username TEXT,
+                wins INTEGER NOT NULL DEFAULT 0,
+                plays INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (chat_id, mode, user_id)
+            )
+            """
         )
         await conn.execute(
             """
@@ -372,20 +403,20 @@ async def bump_stats(
 
 
 async def leaderboard(chat_id: int, limit: int = 15) -> list[asyncpg.Record]:
-    # When scores/wins/played tie, keep the previous higher rank above climbers
-    # (incumbent stays ahead of someone who only just tied them).
     return await pool().fetch(
         """
         SELECT ps.*
         FROM player_stats ps
-        WHERE ps.chat_id = $1
-        ORDER BY ps.score DESC, ps.wins DESC, ps.played ASC,
-                 COALESCE(ps.prev_rank, 2147483647) ASC, ps.user_id ASC
+        LEFT JOIN game_modes gm
+          ON gm.chat_id=ps.chat_id AND gm.active=TRUE
+        WHERE ps.chat_id=$1
+        ORDER BY
+          CASE WHEN gm.winner_user_id IS NOT NULL
+                    AND ps.user_id=gm.winner_user_id THEN 0 ELSE 1 END,
+          ps.score DESC, ps.wins DESC, ps.played ASC,
+          COALESCE(ps.prev_rank,2147483647) ASC, ps.user_id ASC
         LIMIT $2
-        """,
-        chat_id,
-        limit,
-    )
+        """,chat_id,limit)
 
 
 async def reset_group(chat_id: int) -> list[asyncpg.Record]:
@@ -515,6 +546,151 @@ async def house_enabled(chat_id: int) -> bool:
     settings = await get_house_settings(chat_id)
     return bool(settings["house_enabled"])
 
+
+
+async def get_game_mode(chat_id: int) -> dict | None:
+    row = await pool().fetchrow("SELECT * FROM game_modes WHERE chat_id=$1", chat_id)
+    return dict(row) if row else None
+
+
+async def save_game_mode_pending(chat_id: int, mode: str, target: int = 0, days: int = 0) -> None:
+    mode = "first" if mode == "first" else "highest"
+    await pool().execute(
+        """
+        INSERT INTO game_modes
+            (chat_id,mode,target,days,active,pending)
+        VALUES ($1,$2,$3,$4,FALSE,TRUE)
+        ON CONFLICT (chat_id) DO UPDATE SET
+            mode=EXCLUDED.mode,target=EXCLUDED.target,days=EXCLUDED.days,
+            active=FALSE,pending=TRUE,started_at=NULL,ends_at=NULL,
+            winner_user_id=NULL,winner_username=NULL,winner_score=NULL
+        """,
+        chat_id, mode, max(0,int(target)), max(0,int(days)),
+    )
+
+
+async def activate_game_mode(chat_id: int) -> dict | None:
+    row = await pool().fetchrow("SELECT * FROM game_modes WHERE chat_id=$1", chat_id)
+    if row is None:
+        return None
+    now = datetime.now(timezone.utc)
+    ends_at = now + timedelta(days=max(0,int(row["days"] or 0))) if row["mode"]=="highest" else None
+    row = await pool().fetchrow(
+        """
+        UPDATE game_modes
+        SET active=TRUE,pending=FALSE,started_at=$2,ends_at=$3,
+            winner_user_id=NULL,winner_username=NULL,winner_score=NULL
+        WHERE chat_id=$1 RETURNING *
+        """, chat_id, now, ends_at
+    )
+    return dict(row) if row else None
+
+
+async def reset_game_mode_for_restart(chat_id: int) -> dict | None:
+    row=await pool().fetchrow(
+        """
+        UPDATE game_modes SET active=FALSE,pending=TRUE,started_at=NULL,ends_at=NULL,
+        winner_user_id=NULL,winner_username=NULL,winner_score=NULL
+        WHERE chat_id=$1 RETURNING *
+        """,chat_id)
+    return dict(row) if row else None
+
+
+async def end_game_mode(chat_id: int) -> dict | None:
+    row=await pool().fetchrow(
+        """
+        UPDATE game_modes SET active=FALSE,pending=FALSE,started_at=NULL,ends_at=NULL,
+        winner_user_id=NULL,winner_username=NULL,winner_score=NULL
+        WHERE chat_id=$1 RETURNING *
+        """,chat_id)
+    return dict(row) if row else None
+
+
+async def clear_game_mode_history(chat_id: int, mode: str) -> None:
+    await pool().execute("DELETE FROM game_mode_history WHERE chat_id=$1 AND mode=$2",chat_id,mode)
+
+
+async def game_mode_history_exists(chat_id: int, mode: str) -> bool:
+    return await pool().fetchrow(
+        "SELECT 1 FROM game_mode_history WHERE chat_id=$1 AND mode=$2 AND wins>0 LIMIT 1",
+        chat_id,mode
+    ) is not None
+
+
+async def game_mode_history(chat_id: int, mode: str) -> list[asyncpg.Record]:
+    return await pool().fetch(
+        """
+        SELECT * FROM game_mode_history
+        WHERE chat_id=$1 AND mode=$2 AND wins>0
+        ORDER BY wins DESC,plays DESC,COALESCE(username,''),user_id
+        """,chat_id,mode
+    )
+
+
+async def game_mode_participation(chat_id: int, mode: str, players: list[dict]) -> None:
+    if not players:
+        return
+    async with pool().acquire() as conn:
+        await conn.executemany(
+            """
+            INSERT INTO game_mode_history(chat_id,mode,user_id,username,wins,plays)
+            VALUES($1,$2,$3,$4,0,1)
+            ON CONFLICT(chat_id,mode,user_id) DO UPDATE SET
+                username=EXCLUDED.username,plays=game_mode_history.plays+1
+            """,
+            [(chat_id,mode,int(p["user_id"]),p.get("username")) for p in players],
+        )
+
+
+async def lock_game_mode_winner(chat_id: int,user_id: int,username: str|None,score: int) -> dict|None:
+    row=await pool().fetchrow(
+        """
+        UPDATE game_modes SET winner_user_id=$2,winner_username=$3,winner_score=$4
+        WHERE chat_id=$1 AND active=TRUE AND winner_user_id IS NULL RETURNING *
+        """,chat_id,user_id,username,score)
+    if row is None:
+        return None
+    await pool().execute(
+        """
+        INSERT INTO game_mode_history(chat_id,mode,user_id,username,wins,plays)
+        VALUES($1,$2,$3,$4,1,0)
+        ON CONFLICT(chat_id,mode,user_id) DO UPDATE SET
+            username=EXCLUDED.username,wins=game_mode_history.wins+1
+        """,chat_id,row["mode"],user_id,username)
+    return dict(row)
+
+
+async def check_first_to_winner(chat_id:int) -> dict|None:
+    mode=await get_game_mode(chat_id)
+    if not mode or not mode["active"] or mode["mode"]!="first" or mode["winner_user_id"] is not None:
+        return None
+    target=int(mode["target"] or 0)
+    if target<=0:
+        return None
+    row=await pool().fetchrow(
+        """
+        SELECT user_id,username,score FROM player_stats
+        WHERE chat_id=$1 AND score >= $2
+        ORDER BY score DESC,wins DESC,played ASC,user_id ASC LIMIT 1
+        """,chat_id,target)
+    if row is None:
+        return None
+    return await lock_game_mode_winner(chat_id,int(row["user_id"]),row["username"],int(row["score"]))
+
+
+async def highest_score_winner(chat_id:int) -> dict|None:
+    mode=await get_game_mode(chat_id)
+    if not mode or not mode["active"] or mode["mode"]!="highest" or mode["winner_user_id"] is not None:
+        return mode if mode and mode["winner_user_id"] else None
+    row=await pool().fetchrow(
+        """
+        SELECT user_id,username,score FROM player_stats
+        WHERE chat_id=$1
+        ORDER BY score DESC,wins DESC,played ASC,user_id ASC LIMIT 1
+        """,chat_id)
+    if row is None:
+        return mode
+    return await lock_game_mode_winner(chat_id,int(row["user_id"]),row["username"],int(row["score"]))
 
 async def record_deal_memory(chat_id: int, mode: str, cards: list[str]) -> None:
     async with pool().acquire() as conn:
