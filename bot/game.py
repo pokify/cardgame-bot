@@ -121,7 +121,17 @@ def lobby_text(
     else:
         base, bonus = 0, 0
 
+    mode = settings.get("_game_mode") or {}
+    mode_line = None
+    if mode.get("active"):
+        if mode.get("mode") == "highest":
+            mode_line = "<b>Game mode: Highest Score Wins</b>"
+        elif mode.get("mode") == "first":
+            mode_line = f"<b>Game mode: First to {int(mode.get('target') or 0)} points</b>"
+
     lines = [
+        mode_line,
+        "" if mode_line else None,
         "<b>New hand has started!</b>",
         "",
         flavor_block.rstrip("\n") if flavor_block else None,

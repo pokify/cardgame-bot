@@ -48,6 +48,14 @@ async def _lobby_lock(game_id: int) -> asyncio.Lock:
         return lock
 
 
+async def _lobby_text_for_chat(chat_id: int, players: list, flavor: str | None) -> str:
+    settings = await db.get_pvp_settings(chat_id)
+    mode = await db.get_game_mode(chat_id)
+    settings = dict(settings or {})
+    settings["_game_mode"] = mode
+    return lobby_text(players, flavor, settings)
+
+
 def _schedule_expire(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: int) -> None:
     jq = context.job_queue
     name = f"expire:{game_id}"
@@ -348,7 +356,7 @@ async def join_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             run_game = True
         else:
             run_game = False
-            text = lobby_text(players, game["flavor"], await db.get_pvp_settings(chat.id))
+            text = await _lobby_text_for_chat(chat.id, players, game["flavor"])
             house_on = await db.house_enabled(chat.id)
             markup = lobby_keyboard(game_id, house_available=house_on and len(players) <= 1)
 
@@ -655,6 +663,14 @@ async def _run_house_challenge(
     )
 
     await db.set_status(game_id, "finished")
+
+    # A House result changes the same combined leaderboard Score/W/P used by
+    # game modes, so a House win can also meet a First-to-X target.
+    mode = await db.get_game_mode(chat_id)
+    if mode and mode.get("active") and mode.get("mode") == "first":
+        winner_mode = await db.check_first_to_winner(chat_id)
+        if winner_mode:
+            await _mode_announce_winner(context, chat_id, winner_mode)
 
 
 async def expire_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1258,7 +1274,7 @@ async def bump_lobby_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         try:
             msg = await context.bot.send_message(
                 chat_id,
-                lobby_text(players, game["flavor"], await db.get_pvp_settings(chat_id)),
+                await _lobby_text_for_chat(chat_id, players, game["flavor"]),
                 parse_mode="HTML",
                 reply_markup=lobby_keyboard(
                     game_id,
@@ -1292,9 +1308,9 @@ async def gamemode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         url = f"https://t.me/{username}?start=gamemode_{chat.id}"
         await context.bot.send_message(
             chat.id,
-            "Start Tomochi Cards game mode",
+            "game mode settings",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Open Game Mode", url=url)]
+                [InlineKeyboardButton("Open", url="https://t.me/tomochicardbot?start=gamemode_" + str(chat.id))]
             ]),
         )
         return
@@ -1464,10 +1480,15 @@ async def resetlb_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         for job in context.job_queue.get_jobs_by_name(f"modeend:{chat.id}"):
             job.schedule_removal()
     await _delete_quietly(context.bot, chat.id, query.message.message_id)
-    msg="Tomochi Cards Leaderboard Reset!"
     if mode and mode.get("active"):
-        msg += "\n\nGame mode will begin again after the next completed /cards game."
-    await context.bot.send_message(chat.id,msg)
+        label = "Highest Score Wins" if mode["mode"] == "highest" else "First to x Points"
+        msg = (
+            "Tomochi Cards Leaderboard Reset!\n\n"
+            f"<b>Game mode ({label})</b> will begin again after the next completed /cards game."
+        )
+    else:
+        msg = "Tomochi Cards Leaderboard Reset!"
+    await context.bot.send_message(chat.id, msg, parse_mode="HTML")
 
 
 async def hourly_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1487,7 +1508,7 @@ async def _open_auto_lobby(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> 
     game = await db.create_game(chat_id, "auto", expires_at(), flavor)
     msg = await context.bot.send_message(
         chat_id,
-        lobby_text([], game["flavor"], await db.get_pvp_settings(chat_id)),
+        await _lobby_text_for_chat(chat_id, [], game["flavor"]),
         parse_mode="HTML",
         reply_markup=lobby_keyboard(game["id"], house_available=await db.house_enabled(chat_id)),
         disable_web_page_preview=True,
