@@ -68,7 +68,10 @@ def house_confirm_keyboard(game_id: int) -> InlineKeyboardMarkup:
 
 def winner_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("View Leaderboard", callback_data="showlb")]]
+        [
+            [InlineKeyboardButton("View Leaderboard", callback_data="showlb")],
+            [InlineKeyboardButton("Play Cards", callback_data="playcards")],
+        ]
     )
 
 

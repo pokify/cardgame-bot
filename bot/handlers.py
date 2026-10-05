@@ -156,6 +156,14 @@ def _movement_prefix(movement: int, lb_id: str, lb_fallback: str, position: str)
     return f"\u2007{_tg_emoji(lb_id, lb_fallback)}{position}"
 
 
+def _leaderboard_name(row) -> str:
+    username = row["username"]
+    if username:
+        return "@" + str(username).lstrip("@")
+    name = row["first_name"] or "player"
+    return "@" + str(name).replace("<", "").replace(">", "")
+
+
 def _leaderboard_html(rows, show_house: bool = True) -> str:
     if not rows:
         return "No games yet. Start one with /cards."
@@ -212,7 +220,7 @@ def _leaderboard_html(rows, show_house: bool = True) -> str:
                 position = "&lt;&gt;"
             prefix = _movement_prefix(movement, lb_id, lb_fallback, position)
 
-        who = mention(row["username"], row["first_name"], row["user_id"])
+        who = _leaderboard_name(row)
         wins = int(row["wins"])
         played = int(row["played"])
         house_pts = int(row["house_points"] or 0)
@@ -664,13 +672,20 @@ async def _run_house_challenge(
 
     await db.set_status(game_id, "finished")
 
-    # A House result changes the same combined leaderboard Score/W/P used by
-    # game modes, so a House win can also meet a First-to-X target.
+    # House results use the same combined Score/W/P as PvP, so they also
+    # participate in both active game modes.
     mode = await db.get_game_mode(chat_id)
-    if mode and mode.get("active") and mode.get("mode") == "first":
-        winner_mode = await db.check_first_to_winner(chat_id)
-        if winner_mode:
-            await _mode_announce_winner(context, chat_id, winner_mode)
+    if mode and mode.get("active"):
+        if mode.get("mode") == "first":
+            winner_mode = await db.check_first_to_winner(chat_id)
+            if winner_mode:
+                await _mode_announce_winner(context, chat_id, winner_mode)
+        elif mode.get("mode") == "highest":
+            ends_at = mode.get("ends_at")
+            if ends_at and ends_at <= datetime.now(timezone.utc):
+                winner_mode = await db.highest_score_winner(chat_id)
+                if winner_mode and winner_mode.get("winner_user_id"):
+                    await _mode_announce_winner(context, chat_id, winner_mode)
 
 
 async def expire_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1083,11 +1098,29 @@ def _gm_digit_keyboard(group_id:int,mode:str):
     return InlineKeyboardMarkup(rows)
 
 
+async def _post_game_mode_start(context, chat_id:int, mode:dict):
+    if not mode:
+        return
+    if mode.get("mode") == "highest":
+        text = "New Highest Score Wins game has started"
+    else:
+        text = f"New First to {int(mode.get('target') or 0)} Points game has started"
+    await context.bot.send_message(
+        chat_id,
+        text,
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Play Cards", callback_data="playcards")]]
+        ),
+    )
+
+
 async def _activate_pending_mode_after_cards(context,chat_id:int):
     mode=await db.get_game_mode(chat_id)
     if not mode or not mode.get("pending") or mode.get("active"):
         return
     mode=await db.activate_game_mode(chat_id)
+    if mode:
+        await _post_game_mode_start(context, chat_id, mode)
     if mode and mode["mode"]=="highest":
         _schedule_mode_end(context,chat_id,mode)
 
@@ -1203,6 +1236,14 @@ async def lb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     html = await _cards_lb(chat.id)
     await update.message.reply_html(html, disable_web_page_preview=True)
+
+
+async def playcards_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    # Reuse the normal /cards path in the group where the button was pressed.
+    if query.message and query.message.chat.type in ("group", "supergroup"):
+        await cards_cmd(update, context)
 
 
 async def showlb_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1380,6 +1421,8 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
         which=action.split(":",1)[1]; draft=_GAME_MODE_DRAFT.pop((gid,q.from_user.id),{"value":0})
         v=max(0,int(draft["value"]))
         await db.save_game_mode_pending(gid,which,v if which=="first" else 0,v if which=="highest" else 0)
+        pending = await db.get_game_mode(gid)
+        await _post_game_mode_start(context, gid, pending)
         await q.answer("Saved.")
         await q.edit_message_text("Saved. Game begins after next completed /cards game.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back",callback_data=_gm_cb(gid,"menu"))]])); return
     if action in ("end","restart"):
@@ -1394,6 +1437,8 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
             await db.end_game_mode(gid); msg="Game ended and leaderboard cleared."
         else:
             await db.reset_game_mode_for_restart(gid); msg="Game restarted. Game begins after next completed /cards game."
+            restarted = await db.get_game_mode(gid)
+            await _post_game_mode_start(context, gid, restarted)
         for job in context.job_queue.get_jobs_by_name(f"modeend:{gid}"): job.schedule_removal()
         await q.answer(); await q.edit_message_text(msg,reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back",callback_data=_gm_cb(gid,"menu"))]])); return
     if action.startswith("history:"):
