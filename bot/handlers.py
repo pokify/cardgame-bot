@@ -644,12 +644,19 @@ async def _run_house_challenge(
 
     # House challenges count toward the same combined leaderboard W/P totals
     # as PvP. Score and H are both changed by the House result.
-    await db.apply_house_result(
-        chat_id,
-        player,
-        delta,
-        won=player_won,
-    )
+    #
+    # Keep the game recoverable even if a leaderboard/mode database operation
+    # fails: the House outcome must still be posted and the game must not stay
+    # stuck in "running".
+    try:
+        await db.apply_house_result(
+            chat_id,
+            player,
+            delta,
+            won=player_won,
+        )
+    except Exception:
+        log.exception("Could not record House result for game %s", game_id)
 
     if player_won:
         result = f"{player_tag} highest score, you win! 😤\n\nHouse will get you next time!"
@@ -663,6 +670,10 @@ async def _run_house_challenge(
         if rr_on:
             result += f"\n\n{delta} points!"
 
+    # Mark the game finished before optional mode bookkeeping so a failed
+    # operation can never leave /cards blocked by a stale running game.
+    await db.set_status(game_id, "finished")
+
     await context.bot.send_message(
         chat_id,
         result,
@@ -671,22 +682,24 @@ async def _run_house_challenge(
         disable_web_page_preview=True,
     )
 
-    await db.set_status(game_id, "finished")
-
-    # House results use the same combined Score/W/P as PvP, so they also
-    # participate in both active game modes.
-    mode = await db.get_game_mode(chat_id)
-    if mode and mode.get("active"):
-        if mode.get("mode") == "first":
-            winner_mode = await db.check_first_to_winner(chat_id)
-            if winner_mode:
-                await _mode_announce_winner(context, chat_id, winner_mode)
-        elif mode.get("mode") == "highest":
-            ends_at = mode.get("ends_at")
-            if ends_at and ends_at <= datetime.now(timezone.utc):
-                winner_mode = await db.highest_score_winner(chat_id)
-                if winner_mode and winner_mode.get("winner_user_id"):
+    # House results participate in active game modes, but game mode is
+    # completely optional and must never be required for a House outcome.
+    try:
+        mode = await db.get_game_mode(chat_id)
+        if mode and mode.get("active"):
+            if mode.get("mode") == "first":
+                winner_mode = await db.check_first_to_winner(chat_id)
+                if winner_mode:
                     await _mode_announce_winner(context, chat_id, winner_mode)
+            elif mode.get("mode") == "highest":
+                ends_at = mode.get("ends_at")
+                if ends_at and ends_at <= datetime.now(timezone.utc):
+                    winner_mode = await db.highest_score_winner(chat_id)
+                    if winner_mode and winner_mode.get("winner_user_id"):
+                        await _mode_announce_winner(context, chat_id, winner_mode)
+    except Exception:
+        log.exception("Could not process House game-mode bookkeeping for game %s", game_id)
+
 
 
 async def expire_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1197,25 +1210,61 @@ async def _history_text(chat_id:int)->str:
     high=await db.game_mode_history(chat_id,"highest")
     if not first and not high:
         return "No history. Game mode winners history presents here after first winner recorded."
-    def section(title,rows):
-        if not rows: return ""
-        lines=[title,"","         Winners   |     Wins  |    Plays"]
-        last=None; rank=0
-        for n,row in enumerate(rows,1):
-            wins=int(row["wins"])
-            if wins!=last: rank=n; last=wins
-            name=row["username"] or str(row["user_id"])
-            lines.append(f"{rank} {name:<18} {wins:>4} {int(row['plays']):>10}")
+
+    def plain_name(row) -> str:
+        username = row["username"]
+        if username:
+            return "@" + str(username).lstrip("@")
+        return "@" + str(row["user_id"])
+
+    def section(title, rows, ranked: bool) -> str:
+        if not rows:
+            return ""
+        lines=[title, ""]
+        if ranked:
+            last=None
+            rank=0
+            for n,row in enumerate(rows,1):
+                wins=int(row["wins"])
+                if wins != last:
+                    rank=n
+                    last=wins
+                lines.append(
+                    f"{rank} {plain_name(row)}\n"
+                    f"Wins: {wins} | Plays :{int(row['plays'])}"
+                )
+        else:
+            for row in rows:
+                wins=int(row["wins"])
+                lines.append(
+                    f"{plain_name(row)}\n"
+                    f"Wins: {wins} | Plays :{int(row['plays'])}"
+                )
         return "\n".join(lines)
+
     sections=[]
-    # Most-played mode first.
+    # Most-played mode first. If tied, keep First to x Points first.
     if first and high:
-        fp=sum(int(r["plays"]) for r in first); hp=sum(int(r["plays"]) for r in high)
-        if hp>fp: sections=[section("Highest Score game mode winners",high),section("First to x Points game mode winners",first)]
-        else: sections=[section("First to x Points game mode winners",first),section("Highest Score game mode winners",high)]
+        fp=sum(int(r["plays"]) for r in first)
+        hp=sum(int(r["plays"]) for r in high)
+        if hp > fp:
+            sections=[
+                section("Highest Score game:", high, False),
+                section("First to x Points game:", first, True),
+            ]
+        else:
+            sections=[
+                section("First to x Points game:", first, True),
+                section("Highest Score game:", high, False),
+            ]
+    elif first:
+        sections=[section("First to x Points game:", first, True)]
     else:
-        sections=[section("First to x Points game mode winners",first),section("Highest Score game mode winners",high)]
-    return "<b>Tomochi Cards Winners History</b>\n\n"+"\n\n".join(x for x in sections if x)
+        sections=[section("Highest Score game:", high, False)]
+
+    return "<b>Tomochi Cards Winners History</b>\n\n" + "\n\n".join(
+        x for x in sections if x
+    )
 
 
 async def _cards_lb(chat_id: int) -> str:
