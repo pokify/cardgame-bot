@@ -29,6 +29,7 @@ from bot.handlers import (
     pvpconfig_cb,
     pvpconfig_cmd,
     playcards_cb,
+    points_cb,
     resetlb_cb,
     resetlb_cmd,
     restore_jobs,
@@ -104,6 +105,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(house_cb, pattern=r"^house:\d+$"))
     app.add_handler(CallbackQueryHandler(showlb_cb, pattern=r"^showlb$"))
     app.add_handler(CallbackQueryHandler(playcards_cb, pattern=r"^playcards$"))
+    app.add_handler(CallbackQueryHandler(points_cb, pattern=r"^points:\d+$"))
     app.add_handler(CallbackQueryHandler(gamemode_cb, pattern=r"^gm:-?\d+:"))
     app.add_handler(CallbackQueryHandler(resetlb_cb, pattern=r"^resetlb:(yes|no)$"))
     app.add_handler(CallbackQueryHandler(houseconfig_cb, pattern=r"^hc:(toggle|plus|minus|nolimit|unlockplus|unlockminus|save|noop)$"))

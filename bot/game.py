@@ -54,6 +54,9 @@ def lobby_keyboard(game_id: int, house_available: bool = True) -> InlineKeyboard
         rows.append(
             [InlineKeyboardButton("Challenge The House", callback_data=f"house:{game_id}")]
         )
+    rows.append(
+        [InlineKeyboardButton("Points", callback_data=f"points:{game_id}")]
+    )
     return InlineKeyboardMarkup(rows)
 
 

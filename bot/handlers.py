@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 from telegram import InputFile, Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -30,6 +31,7 @@ log = logging.getLogger(__name__)
 
 BUMP_SECONDS = 30
 RESET_TIMEOUT = 10
+NEW_GAME_IMAGE = Path(__file__).resolve().parent.parent / "assets" / "gameimages" / "newgame.png"
 
 # Serialize lobby message updates for each game.  A join and a scheduled
 # lobby bump must never read/send/update the lobby concurrently, otherwise
@@ -1119,11 +1121,21 @@ def _gm_digit_keyboard(group_id:int,mode:str):
 async def _post_game_mode_start(context, chat_id:int, mode:dict):
     if not mode:
         return
-    await context.bot.send_message(
-        chat_id,
-        _game_mode_start_text(mode),
-        reply_markup=_game_mode_start_markup(),
-    )
+    caption = _game_mode_start_text(mode)
+    if NEW_GAME_IMAGE.exists():
+        with NEW_GAME_IMAGE.open("rb") as image:
+            await context.bot.send_photo(
+                chat_id,
+                photo=InputFile(image, filename="newgame.png"),
+                caption=caption,
+                reply_markup=_game_mode_start_markup(),
+            )
+    else:
+        await context.bot.send_message(
+            chat_id,
+            caption,
+            reply_markup=_game_mode_start_markup(),
+        )
 
 
 async def _activate_pending_mode_after_cards(context,chat_id:int):
@@ -1262,10 +1274,24 @@ async def _history_text(chat_id:int)->str:
     )
 
 
+def _game_mode_duration(days: int) -> str:
+    days = max(0, int(days or 0))
+    if days in (1, 2, 3):
+        return f"{days * 24}hrs"
+    return f"{days} days"
+
+
 def _game_mode_start_text(mode: dict) -> str:
     if mode.get("mode") == "highest":
-        return "New Highest Score Wins game has started"
-    return f"New First to {int(mode.get('target') or 0)} Points game has started"
+        return (
+            "New Highest Score Wins game started!\n"
+            f"Ends: {_game_mode_duration(int(mode.get('days') or 0))}"
+        )
+    target = int(mode.get("target") or 0)
+    return (
+        f"New First to {target} Points game started!\n"
+        f"Target: {target}"
+    )
 
 
 def _game_mode_start_markup() -> InlineKeyboardMarkup:
@@ -1314,6 +1340,41 @@ async def playcards_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # Reuse the normal /cards path in the group where the button was pressed.
     if query.message and query.message.chat.type in ("group", "supergroup"):
         await cards_cmd(update, context)
+
+
+async def points_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    chat = query.message.chat if query.message else None
+    if chat is None or chat.type not in ("group", "supergroup"):
+        await query.answer("Use Points in a group game.", show_alert=True)
+        return
+
+    pvp = await db.get_pvp_settings(chat.id)
+    house = await db.get_house_settings(chat.id)
+
+    def join_bonus(n: int) -> int:
+        base = int(pvp.get(f"base_{n}") or 0)
+        bonus = int(pvp.get(f"bonus_{n}") or 0)
+        return max(0, bonus) if base > 0 else 0
+
+    lines = [
+        "Current Game Points:",
+        "",
+        f"2P {int(pvp.get('base_2') or 0)} + {join_bonus(2)} join bonus",
+        f"3P {int(pvp.get('base_3') or 0)} + {join_bonus(3)} join bonus",
+        f"4P {int(pvp.get('base_4') or 0)} + {join_bonus(4)} join bonus",
+        "",
+        f"House challenge: lose {int(pvp.get('house_risk') or 0)}/win {int(pvp.get('house_reward') or 0)}",
+        "",
+    ]
+
+    max_plays = house.get("max_plays_per_day")
+    if max_plays is None:
+        lines.append("House limit per player: no limit")
+    else:
+        lines.append(f"House limit per player: {int(max_plays)} a day")
+
+    await query.answer("\n".join(lines), show_alert=True)
 
 
 async def showlb_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1492,7 +1553,16 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
     if action.startswith("save:"):
         which=action.split(":",1)[1]; draft=_GAME_MODE_DRAFT.pop((gid,q.from_user.id),{"value":0})
         v=max(0,int(draft["value"]))
-        await db.save_game_mode_pending(gid,which,v if which=="first" else 0,v if which=="highest" else 0)
+        cancelled = await db.reset_group(gid)
+        for game in cancelled:
+            _cancel_chat_jobs(context, gid, game["id"])
+            await _delete_quietly(context.bot, gid, game["message_id"])
+        await db.save_game_mode_pending(
+            gid,
+            which,
+            v if which=="first" else 0,
+            v if which=="highest" else 0,
+        )
         pending = await db.get_game_mode(gid)
         await _post_game_mode_start(context, gid, pending)
         await q.answer("Saved.")
