@@ -70,7 +70,7 @@ def winner_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("View Leaderboard", callback_data="showlb")],
-            [InlineKeyboardButton("Play Cards", callback_data="playcards")],
+            [InlineKeyboardButton("Play", callback_data="playcards")],
         ]
     )
 
