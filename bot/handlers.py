@@ -168,7 +168,7 @@ def _leaderboard_html(rows, show_house: bool = True) -> str:
         return "No games yet. Start one with /cards."
 
     lines = ["<b>Tomochi Cards Leaderboard</b>", ""]
-    lines.append("H(House) W(Wins) P(Plays)")
+    lines.append("(<b>S</b>core) (<b>H</b>ouse) (<b>W</b>ins) (<b>P</b>layed)")
     lines.append("")
 
     last_rank = len(rows)
