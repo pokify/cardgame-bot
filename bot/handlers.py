@@ -159,9 +159,8 @@ def _movement_prefix(movement: int, lb_id: str, lb_fallback: str, position: str)
 def _leaderboard_name(row) -> str:
     username = row["username"]
     if username:
-        return "@" + str(username).lstrip("@")
-    name = row["first_name"] or "player"
-    return "@" + str(name).replace("<", "").replace(">", "")
+        return str(username).lstrip("@").replace("<", "").replace(">", "")
+    return str(row["first_name"] or "player").replace("<", "").replace(">", "")
 
 
 def _leaderboard_html(rows, show_house: bool = True) -> str:
@@ -285,11 +284,13 @@ async def cards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await message.reply_text("Could not create the lobby. Try again.")
         return
 
-    try:
-        pvp_settings = await db.get_pvp_settings(chat.id)
-    except Exception:
-        log.exception("Could not load PvP settings while creating lobby")
-        pvp_settings = db._default_pvp_settings()
+    mode_was_pending = False
+    mode_before = await db.get_game_mode(chat.id)
+    if mode_before and mode_before.get("pending") and not mode_before.get("active"):
+        activated = await db.activate_game_mode(chat.id)
+        mode_was_pending = bool(activated)
+        if activated and activated.get("mode") == "highest":
+            _schedule_mode_end(context, chat.id, activated)
 
     try:
         house_on = await db.house_enabled(chat.id)
@@ -299,13 +300,15 @@ async def cards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     try:
         msg = await message.reply_html(
-            lobby_text(players, game["flavor"], pvp_settings),
+            await _lobby_text_for_chat(chat.id, players, game["flavor"]),
             reply_markup=lobby_keyboard(game["id"], house_available=house_on),
             disable_web_page_preview=True,
         )
     except Exception:
         log.exception("Could not send cards lobby message")
         await db.set_status(game["id"], "expired")
+        if mode_was_pending:
+            await db.reset_game_mode_for_restart(chat.id)
         await message.reply_text("Could not create the lobby. Try again.")
         return
 
@@ -686,7 +689,8 @@ async def _run_house_challenge(
     # completely optional and must never be required for a House outcome.
     try:
         mode = await db.get_game_mode(chat_id)
-        if mode and mode.get("active"):
+        if mode and mode.get("active") and not mode.get("winner_user_id"):
+            await db.game_mode_participation(chat_id, mode["mode"], [player])
             if mode.get("mode") == "first":
                 winner_mode = await db.check_first_to_winner(chat_id)
                 if winner_mode:
@@ -1115,16 +1119,10 @@ def _gm_digit_keyboard(group_id:int,mode:str):
 async def _post_game_mode_start(context, chat_id:int, mode:dict):
     if not mode:
         return
-    if mode.get("mode") == "highest":
-        text = "New Highest Score Wins game has started"
-    else:
-        text = f"New First to {int(mode.get('target') or 0)} Points game has started"
     await context.bot.send_message(
         chat_id,
-        text,
-        reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("Play Cards", callback_data="playcards")]]
-        ),
+        _game_mode_start_text(mode),
+        reply_markup=_game_mode_start_markup(),
     )
 
 
@@ -1133,8 +1131,6 @@ async def _activate_pending_mode_after_cards(context,chat_id:int):
     if not mode or not mode.get("pending") or mode.get("active"):
         return
     mode=await db.activate_game_mode(chat_id)
-    if mode:
-        await _post_game_mode_start(context, chat_id, mode)
     if mode and mode["mode"]=="highest":
         _schedule_mode_end(context,chat_id,mode)
 
@@ -1172,8 +1168,7 @@ async def mode_end_job(context:ContextTypes.DEFAULT_TYPE):
 
 async def _record_mode_after_cards(context,chat_id:int,players:list):
     mode=await db.get_game_mode(chat_id)
-    if not mode or not mode.get("active"):
-        await _activate_pending_mode_after_cards(context,chat_id)
+    if not mode or not mode.get("active") or mode.get("winner_user_id"):
         return
     await db.game_mode_participation(chat_id,mode["mode"],players)
     if mode["mode"]=="first":
@@ -1201,7 +1196,7 @@ def _mode_status_html(mode:dict,rows:list)->str:
             else: end=f"{int((remaining+86399)//86400)} days"
         lines=["<b>Game: Highest Score Wins</b>",f"Ends: {end}"]
     if mode.get("winner_user_id"):
-        lines.append(f"Winner: @{mode.get('winner_username') or mode['winner_user_id']}")
+        lines.append(f"Winner: {str(mode.get('winner_username') or mode['winner_user_id']).lstrip('@')}")
     return "\n".join(lines)
 
 
@@ -1214,8 +1209,8 @@ async def _history_text(chat_id:int)->str:
     def plain_name(row) -> str:
         username = row["username"]
         if username:
-            return "@" + str(username).lstrip("@")
-        return "@" + str(row["user_id"])
+            return str(username).lstrip("@").replace("<", "").replace(">", "")
+        return str(row["user_id"])
 
     def section(title, rows, ranked: bool) -> str:
         if not rows:
@@ -1249,28 +1244,48 @@ async def _history_text(chat_id:int)->str:
         hp=sum(int(r["plays"]) for r in high)
         if hp > fp:
             sections=[
-                section("Highest Score game:", high, False),
+                section("Highest Score game:", high, True),
                 section("First to x Points game:", first, True),
             ]
         else:
             sections=[
                 section("First to x Points game:", first, True),
-                section("Highest Score game:", high, False),
+                section("Highest Score game:", high, True),
             ]
     elif first:
         sections=[section("First to x Points game:", first, True)]
     else:
-        sections=[section("Highest Score game:", high, False)]
+        sections=[section("Highest Score game:", high, True)]
 
     return "<b>Tomochi Cards Winners History</b>\n\n" + "\n\n".join(
         x for x in sections if x
     )
 
 
+def _game_mode_start_text(mode: dict) -> str:
+    if mode.get("mode") == "highest":
+        return "New Highest Score Wins game has started"
+    return f"New First to {int(mode.get('target') or 0)} Points game has started"
+
+
+def _game_mode_start_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("Play Cards", callback_data="playcards")]]
+    )
+
+
+def _leaderboard_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("Play Cards", callback_data="playcards")]]
+    )
+
+
 async def _cards_lb(chat_id: int) -> str:
+    mode = await db.get_game_mode(chat_id)
+    if mode and mode.get("pending") and not mode.get("active"):
+        return _game_mode_start_text(mode)
     rows = await db.leaderboard(chat_id)
     html = _leaderboard_html(rows)
-    mode = await db.get_game_mode(chat_id)
     if mode and mode.get("active") and rows:
         status = _mode_status_html(mode, rows)
         if status:
@@ -1285,7 +1300,12 @@ async def lb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Use /cardslb in the group.")
         return
     html = await _cards_lb(chat.id)
-    await update.message.reply_html(html, disable_web_page_preview=True)
+    mode = await db.get_game_mode(chat.id)
+    await update.message.reply_html(
+        html,
+        reply_markup=_game_mode_start_markup() if (mode and mode.get("pending") and not mode.get("active")) else _leaderboard_markup(),
+        disable_web_page_preview=True,
+    )
 
 
 async def playcards_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1301,10 +1321,12 @@ async def showlb_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await query.answer()
     chat = query.message.chat
     html = await _cards_lb(chat.id)
+    mode = await db.get_game_mode(chat.id)
     await context.bot.send_message(
         chat.id,
         html,
         parse_mode="HTML",
+        reply_markup=_game_mode_start_markup() if (mode and mode.get("pending") and not mode.get("active")) else _leaderboard_markup(),
         disable_web_page_preview=True,
     )
 
@@ -1570,17 +1592,15 @@ async def resetlb_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     for game in cancelled:
         _cancel_chat_jobs(context, chat.id, game["id"])
         await _delete_quietly(context.bot, chat.id, game["message_id"])
+    restarted_mode = None
     if mode and mode.get("active"):
-        await db.reset_game_mode_for_restart(chat.id)
+        restarted_mode = await db.reset_game_mode_for_restart(chat.id)
         for job in context.job_queue.get_jobs_by_name(f"modeend:{chat.id}"):
             job.schedule_removal()
     await _delete_quietly(context.bot, chat.id, query.message.message_id)
-    if mode and mode.get("active"):
-        label = "Highest Score Wins" if mode["mode"] == "highest" else "First to x Points"
-        msg = (
-            "Tomochi Cards Leaderboard Reset!\n\n"
-            f"<b>Game mode ({label})</b> will begin again after the next completed /cards game."
-        )
+    if restarted_mode:
+        await _post_game_mode_start(context, chat.id, restarted_mode)
+        msg = "Tomochi Cards Leaderboard Reset!"
     else:
         msg = "Tomochi Cards Leaderboard Reset!"
     await context.bot.send_message(chat.id, msg, parse_mode="HTML")

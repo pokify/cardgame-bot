@@ -135,6 +135,7 @@ def lobby_text(
     lines = [
         mode_line,
         "" if mode_line else None,
+        "" if mode_line else None,
         "<b>New hand has started!</b>",
         "",
         flavor_block.rstrip("\n") if flavor_block else None,
