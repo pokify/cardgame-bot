@@ -1364,7 +1364,7 @@ async def points_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"3P {int(pvp.get('base_3') or 0)} + {join_bonus(3)} join bonus",
         f"4P {int(pvp.get('base_4') or 0)} + {join_bonus(4)} join bonus",
         "",
-        f"House challenge: lose {int(pvp.get('house_risk') or 0)}/win {int(pvp.get('house_reward') or 0)}",
+        f"House challenge: lose -{int(pvp.get('house_risk') or 0)}/win {int(pvp.get('house_reward') or 0)}",
         "",
     ]
 
