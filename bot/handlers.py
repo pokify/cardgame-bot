@@ -223,7 +223,7 @@ def _leaderboard_html(rows, show_house: bool = True) -> str:
         wins = int(row["wins"])
         played = int(row["played"])
         house_pts = int(row["house_points"] or 0)
-        stats = f"Score: {score} (H:{house_pts}) | W:{wins} | P:{played}"
+        stats = f"Sc:{score} (H:{house_pts}) | W:{wins} | P:{played}"
         lines.append(f"<b>    {i}.</b> {who}\n{prefix}<b>{stats}</b>")
 
     return "\n".join(lines)
