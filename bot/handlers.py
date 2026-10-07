@@ -648,7 +648,7 @@ async def _run_house_challenge(
     # This announcement is intentionally permanent and visible to everyone.
     await context.bot.send_message(
         chat_id,
-        f"{player_tag} has challenged the house! <tg-emoji emoji-id=\"5962888046918506770\">⚔️</tg-emoji>",
+        f"{player_tag} has challenged the house!<tg-emoji emoji-id=\"5962888046918506770\">⚔️</tg-emoji>",
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
