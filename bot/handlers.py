@@ -30,8 +30,9 @@ from bot.images import render_deal
 log = logging.getLogger(__name__)
 
 BUMP_SECONDS = 30
-RESET_TIMEOUT = 10
+RESET_TIMEOUT = 12
 NEW_GAME_IMAGE = Path(__file__).resolve().parent.parent / "assets" / "gameimages" / "newgame.png"
+GAME_MODE_GROUP_MESSAGE_TIMEOUT = 6
 
 # Serialize lobby message updates for each game.  A join and a scheduled
 # lobby bump must never read/send/update the lobby concurrently, otherwise
@@ -886,6 +887,7 @@ async def houseconfig_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         parse_mode="HTML",
         reply_markup=_house_cfg_keyboard(_house_cfg_draft[chat.id]),
     )
+    await _delete_quietly(context.bot, chat.id, message.message_id if message else None)
 
 
 async def houseconfig_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -997,6 +999,7 @@ async def pvpconfig_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         parse_mode="HTML",
         reply_markup=_pvp_cfg_keyboard(draft),
     )
+    await _delete_quietly(context.bot, chat.id, message.message_id if message else None)
 
 
 async def pvpconfig_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1060,17 +1063,14 @@ def _gm_cb(group_id:int, action:str)->str:
 
 
 def _gm_menu_text(mode):
-    if mode and mode.get("active"):
+    if mode and (mode.get("active") or mode.get("pending")):
         label="First to x points" if mode["mode"]=="first" else "Highest Score Wins"
         return f"<b>Start Tomochi Cards game mode</b>\n\nGame mode active: {label}"
-    if mode and mode.get("pending"):
-        label="First to x points" if mode["mode"]=="first" else "Highest Score Wins"
-        return f"<b>Start Tomochi Cards game mode</b>\n\nSaved: {label}\nGame begins after next completed /cards game."
     return "<b>Start Tomochi Cards game mode</b>"
 
 
 def _gm_menu_keyboard(group_id:int,mode):
-    if mode and mode.get("active"):
+    if mode and (mode.get("active") or mode.get("pending")):
         rows=[[InlineKeyboardButton("Highest Score Wins",callback_data=_gm_cb(group_id,"highest")),
                InlineKeyboardButton("First to x Score",callback_data=_gm_cb(group_id,"first"))]]
     else:
@@ -1163,7 +1163,7 @@ async def _mode_announce_winner(context,chat_id:int,mode:dict):
     username=mode.get("winner_username") or str(mode.get("winner_user_id"))
     score=int(mode.get("winner_score") or 0)
     if mode["mode"]=="first":
-        text=f"Target met!\nTomochi Cards Winner! {_MODE_WINNER_EMOJI}\n<b>@{username}</b> ({score}) points!\n\nNo1 rank locked.\n\nview /history"
+        text=f"Target met!\nTomochi Cards Winner! {_MODE_WINNER_EMOJI}\n<b>@{username}</b> {score} points!\n\nNo1 rank locked.\n\nview /history"
     else:
         days=int(mode.get("days") or 0)
         duration=f"{days*24}hrs" if days in (1,2,3) else f"{days} days"
@@ -1291,7 +1291,7 @@ def _game_mode_start_text(mode: dict) -> str:
     target = int(mode.get("target") or 0)
     return (
         "<b>Tomochi Cards</b>\n\n"
-        f"New First to {target} Points game started!\n"
+        "New First to x Points game started!\n"
         f"Target: {target}"
     )
 
@@ -1482,12 +1482,20 @@ async def gamemode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         username = context.bot.username or "tomochicardbot"
         url = f"https://t.me/{username}?start=gamemode_{chat.id}"
-        await context.bot.send_message(
+        settings_message = await context.bot.send_message(
             chat.id,
             "game mode settings",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("Open", url="https://t.me/tomochicardbot?start=gamemode_" + str(chat.id))]
             ]),
+        )
+        await _delete_quietly(context.bot, chat.id, message.message_id if message else None)
+        context.job_queue.run_once(
+            delete_message_job,
+            when=GAME_MODE_GROUP_MESSAGE_TIMEOUT,
+            data={"chat_id": chat.id, "message_id": settings_message.message_id},
+            name=f"gamemode_group:{chat.id}:{settings_message.message_id}",
+            chat_id=chat.id,
         )
         return
 
@@ -1568,7 +1576,12 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
         pending = await db.get_game_mode(gid)
         await _post_game_mode_start(context, gid, pending)
         await q.answer("Saved.")
-        await q.edit_message_text("Saved. Game begins after next completed /cards game.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back",callback_data=_gm_cb(gid,"menu"))]])); return
+        await q.edit_message_text(
+            _gm_menu_text(pending),
+            parse_mode="HTML",
+            reply_markup=_gm_menu_keyboard(gid, pending),
+        )
+        return
     if action in ("end","restart"):
         if not mode or not mode.get("active"): await q.answer("No active game mode.",show_alert=True); return
         label="First to x points" if mode["mode"]=="first" else "Highest Score Wins"
@@ -1580,11 +1593,23 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
         if action=="confirm_end":
             await db.end_game_mode(gid); msg="Game ended and leaderboard cleared."
         else:
-            await db.reset_game_mode_for_restart(gid); msg="Game restarted. Game begins after next completed /cards game."
+            await db.reset_game_mode_for_restart(gid)
             restarted = await db.get_game_mode(gid)
             await _post_game_mode_start(context, gid, restarted)
         for job in context.job_queue.get_jobs_by_name(f"modeend:{gid}"): job.schedule_removal()
-        await q.answer(); await q.edit_message_text(msg,reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back",callback_data=_gm_cb(gid,"menu"))]])); return
+        await q.answer()
+        if action == "confirm_restart":
+            await q.edit_message_text(
+                _gm_menu_text(restarted),
+                parse_mode="HTML",
+                reply_markup=_gm_menu_keyboard(gid, restarted),
+            )
+        else:
+            await q.edit_message_text(
+                msg,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back",callback_data=_gm_cb(gid,"menu"))]]),
+            )
+        return
     if action.startswith("history:"):
         which=action.split(":",1)[1]
         if not await db.game_mode_history_exists(gid,which): await q.answer("No winner history recorded.",show_alert=True); return
@@ -1633,6 +1658,11 @@ async def resetlb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         name=name,
         chat_id=chat.id,
     )
+
+
+async def delete_message_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    data = context.job.data or {}
+    await _delete_quietly(context.bot, data["chat_id"], data["message_id"])
 
 
 async def reset_timeout_job(context: ContextTypes.DEFAULT_TYPE) -> None:
