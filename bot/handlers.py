@@ -1128,6 +1128,7 @@ async def _post_game_mode_start(context, chat_id:int, mode:dict):
                 chat_id,
                 photo=InputFile(image, filename="newgame.png"),
                 caption=caption,
+                parse_mode="HTML",
                 reply_markup=_game_mode_start_markup(),
             )
     else:
