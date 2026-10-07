@@ -1122,7 +1122,7 @@ def _gm_control_text(mode):
 
 async def _gm_control_keyboard(group_id:int,mode):
     rows=[]
-    if mode.get("active"):
+    if mode.get("active") or mode.get("pending"):
         rows.append([InlineKeyboardButton("End Current Game",callback_data=_gm_cb(group_id,"end"))])
         label="Reset game keep current target" if mode["mode"]=="first" else "Restart game clear leaderboard"
         rows.append([InlineKeyboardButton(label,callback_data=_gm_cb(group_id,"restart"))])
@@ -1587,7 +1587,11 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
             [InlineKeyboardButton("First to x Score",callback_data=_gm_cb(gid,"first"))],
             [InlineKeyboardButton("Cancel",callback_data=_gm_cb(gid,"menu"))]])); return
     if action in ("highest","first"):
-        if mode and mode.get("active"):
+        # A pending/saved mode is already the current game for Game Mode
+        # controls. Treat it exactly like an active mode here so selecting
+        # the same mode opens its control screen instead of the new-game
+        # configuration keypad.
+        if mode and (mode.get("active") or mode.get("pending")):
             if mode["mode"]!=action:
                 await q.answer("End or reset the current game before choosing another mode.",show_alert=True); return
             kb=await _gm_control_keyboard(gid,mode)
@@ -1619,7 +1623,8 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
         await q.answer("Saved.")
         await q.edit_message_text("Saved. Game begins after next completed /cards game.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back",callback_data=_gm_cb(gid,"menu"))]])); return
     if action in ("end","restart"):
-        if not mode or not mode.get("active"): await q.answer("No active game mode.",show_alert=True); return
+        if not mode or not (mode.get("active") or mode.get("pending")):
+            await q.answer("No active game mode.",show_alert=True); return
         label="First to x points" if mode["mode"]=="first" else "Highest Score Wins"
         if action=="end": text=f"end game clear leaderboard\n\nGame mode: {label}\n\nConfirm?"; yes="confirm_end"
         else: text=("restart current game, clear leaderboard, keep target" if mode["mode"]=="first" else "restart current highest score game, clear leaderboard")+"\n\nConfirm?"; yes="confirm_restart"
