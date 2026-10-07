@@ -1546,11 +1546,21 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
             [InlineKeyboardButton("First to x Score",callback_data=_gm_cb(gid,"first"))],
             [InlineKeyboardButton("Cancel",callback_data=_gm_cb(gid,"menu"))]])); return
     if action in ("highest","first"):
+        # If this mode is already selected (whether the game is currently
+        # active or merely saved/pending), open its controls.  Do not send
+        # the admin back into the "new game" value-entry screen.
+        if mode and mode.get("mode") == action and (mode.get("active") or mode.get("pending")):
+            kb=await _gm_control_keyboard(gid,mode)
+            await q.answer()
+            await q.edit_message_text(
+                _gm_control_text(mode),
+                parse_mode="HTML",
+                reply_markup=kb,
+            )
+            return
         if mode and mode.get("active"):
             if mode["mode"]!=action:
                 await q.answer("End or reset the current game before choosing another mode.",show_alert=True); return
-            kb=await _gm_control_keyboard(gid,mode)
-            await q.answer(); await q.edit_message_text(_gm_control_text(mode),parse_mode="HTML",reply_markup=kb); return
         _GAME_MODE_DRAFT[(gid,q.from_user.id)]={"mode":action,"value":0}
         await q.answer(); await q.edit_message_text(_gm_start_text(action,0),parse_mode="HTML",reply_markup=_gm_digit_keyboard(gid,action)); return
     if action.startswith("digit:"):
