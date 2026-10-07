@@ -1540,27 +1540,51 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
     if action=="menu":
         await q.answer(); await q.edit_message_text(_gm_menu_text(mode),parse_mode="HTML",reply_markup=_gm_menu_keyboard(gid,mode)); return
     if action=="new":
+        # "Start New Game" is only a valid action when there is no saved or
+        # active game mode.  Stale Telegram messages/buttons must not be able
+        # to bypass the current mode menu.
+        if mode and (mode.get("active") or mode.get("pending")):
+            await q.answer("A game mode is already selected. Use the current game mode menu.", show_alert=True)
+            await q.edit_message_text(
+                _gm_menu_text(mode),
+                parse_mode="HTML",
+                reply_markup=_gm_menu_keyboard(gid, mode),
+            )
+            return
         await q.answer()
         await q.edit_message_text("<b>Choose game mode</b>",parse_mode="HTML",reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("Highest Score Wins",callback_data=_gm_cb(gid,"highest"))],
             [InlineKeyboardButton("First to x Score",callback_data=_gm_cb(gid,"first"))],
             [InlineKeyboardButton("Cancel",callback_data=_gm_cb(gid,"menu"))]])); return
     if action in ("highest","first"):
-        # If this mode is already selected (whether the game is currently
-        # active or merely saved/pending), open its controls.  Do not send
-        # the admin back into the "new game" value-entry screen.
-        if mode and mode.get("mode") == action and (mode.get("active") or mode.get("pending")):
-            kb=await _gm_control_keyboard(gid,mode)
-            await q.answer()
-            await q.edit_message_text(
-                _gm_control_text(mode),
-                parse_mode="HTML",
-                reply_markup=kb,
-            )
+        # Never allow a second mode to be created while another mode is
+        # selected, including the saved/pending state before the next /cards.
+        if mode and (mode.get("active") or mode.get("pending")):
+            if mode["mode"] != action:
+                await q.answer("End or reset the current game before choosing another mode.",show_alert=True)
+                return
+
+            # A genuinely active game gets its full controls menu.  A saved
+            # mode has not started yet, so keep the admin on the game-mode
+            # menu rather than showing a misleading controls screen with only
+            # a Back button.
+            if mode.get("active"):
+                kb=await _gm_control_keyboard(gid,mode)
+                await q.answer()
+                await q.edit_message_text(
+                    _gm_control_text(mode),
+                    parse_mode="HTML",
+                    reply_markup=kb,
+                )
+            else:
+                await q.answer()
+                await q.edit_message_text(
+                    _gm_menu_text(mode),
+                    parse_mode="HTML",
+                    reply_markup=_gm_menu_keyboard(gid,mode),
+                )
             return
-        if mode and mode.get("active"):
-            if mode["mode"]!=action:
-                await q.answer("End or reset the current game before choosing another mode.",show_alert=True); return
+
         _GAME_MODE_DRAFT[(gid,q.from_user.id)]={"mode":action,"value":0}
         await q.answer(); await q.edit_message_text(_gm_start_text(action,0),parse_mode="HTML",reply_markup=_gm_digit_keyboard(gid,action)); return
     if action.startswith("digit:"):
