@@ -32,7 +32,6 @@ log = logging.getLogger(__name__)
 BUMP_SECONDS = 30
 RESET_TIMEOUT = 12
 NEW_GAME_IMAGE = Path(__file__).resolve().parent.parent / "assets" / "gameimages" / "newgame.png"
-GAME_MODE_GROUP_MESSAGE_TIMEOUT = 6
 
 # Serialize lobby message updates for each game.  A join and a scheduled
 # lobby bump must never read/send/update the lobby concurrently, otherwise
@@ -97,6 +96,32 @@ async def _delete_quietly(bot, chat_id: int, message_id: int | None) -> None:
         await bot.delete_message(chat_id, message_id)
     except Exception:
         pass
+
+async def _delete_after_seconds(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    message_id: int | None,
+    seconds: int,
+    name: str,
+) -> None:
+    if not message_id:
+        return
+    context.job_queue.run_once(
+        delete_message_job,
+        when=max(1, int(seconds)),
+        data={"chat_id": chat_id, "message_id": message_id},
+        name=name,
+        chat_id=chat_id,
+    )
+
+
+async def delete_message_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    data = context.job.data or {}
+    await _delete_quietly(
+        context.bot,
+        data.get("chat_id"),
+        data.get("message_id"),
+    )
 
 
 # Telegram custom emoji IDs used by the leaderboard.
@@ -887,7 +912,11 @@ async def houseconfig_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         parse_mode="HTML",
         reply_markup=_house_cfg_keyboard(_house_cfg_draft[chat.id]),
     )
-    await _delete_quietly(context.bot, chat.id, message.message_id if message else None)
+    await _delete_quietly(
+        context.bot,
+        chat.id,
+        message.message_id if message else None,
+    )
 
 
 async def houseconfig_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -999,7 +1028,11 @@ async def pvpconfig_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         parse_mode="HTML",
         reply_markup=_pvp_cfg_keyboard(draft),
     )
-    await _delete_quietly(context.bot, chat.id, message.message_id if message else None)
+    await _delete_quietly(
+        context.bot,
+        chat.id,
+        message.message_id if message else None,
+    )
 
 
 async def pvpconfig_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1063,6 +1096,9 @@ def _gm_cb(group_id:int, action:str)->str:
 
 
 def _gm_menu_text(mode):
+    # A saved/pending mode is treated as the current game for the Game Mode
+    # menu. The only "Saved..." confirmation is the message shown immediately
+    # after saving; subsequent /gamemode calls use the active-game menu.
     if mode and (mode.get("active") or mode.get("pending")):
         label="First to x points" if mode["mode"]=="first" else "Highest Score Wins"
         return f"<b>Start Tomochi Cards game mode</b>\n\nGame mode active: {label}"
@@ -1482,7 +1518,7 @@ async def gamemode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         username = context.bot.username or "tomochicardbot"
         url = f"https://t.me/{username}?start=gamemode_{chat.id}"
-        settings_message = await context.bot.send_message(
+        settings_msg = await context.bot.send_message(
             chat.id,
             "game mode settings",
             reply_markup=InlineKeyboardMarkup([
@@ -1490,12 +1526,12 @@ async def gamemode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             ]),
         )
         await _delete_quietly(context.bot, chat.id, message.message_id if message else None)
-        context.job_queue.run_once(
-            delete_message_job,
-            when=GAME_MODE_GROUP_MESSAGE_TIMEOUT,
-            data={"chat_id": chat.id, "message_id": settings_message.message_id},
-            name=f"gamemode_group:{chat.id}:{settings_message.message_id}",
-            chat_id=chat.id,
+        await _delete_after_seconds(
+            context,
+            chat.id,
+            settings_msg.message_id,
+            6,
+            f"gamemode-open:{chat.id}:{settings_msg.message_id}",
         )
         return
 
@@ -1520,9 +1556,14 @@ async def gamemode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
 
         mode = await db.get_game_mode(gid)
-        await update.message.reply_html(
+        menu_msg = await update.message.reply_html(
             _gm_menu_text(mode),
             reply_markup=_gm_menu_keyboard(gid, mode),
+        )
+        await _delete_quietly(
+            context.bot,
+            chat.id,
+            message.message_id if message else None,
         )
         return
 
@@ -1540,51 +1581,17 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
     if action=="menu":
         await q.answer(); await q.edit_message_text(_gm_menu_text(mode),parse_mode="HTML",reply_markup=_gm_menu_keyboard(gid,mode)); return
     if action=="new":
-        # "Start New Game" is only a valid action when there is no saved or
-        # active game mode.  Stale Telegram messages/buttons must not be able
-        # to bypass the current mode menu.
-        if mode and (mode.get("active") or mode.get("pending")):
-            await q.answer("A game mode is already selected. Use the current game mode menu.", show_alert=True)
-            await q.edit_message_text(
-                _gm_menu_text(mode),
-                parse_mode="HTML",
-                reply_markup=_gm_menu_keyboard(gid, mode),
-            )
-            return
         await q.answer()
         await q.edit_message_text("<b>Choose game mode</b>",parse_mode="HTML",reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("Highest Score Wins",callback_data=_gm_cb(gid,"highest"))],
             [InlineKeyboardButton("First to x Score",callback_data=_gm_cb(gid,"first"))],
             [InlineKeyboardButton("Cancel",callback_data=_gm_cb(gid,"menu"))]])); return
     if action in ("highest","first"):
-        # Never allow a second mode to be created while another mode is
-        # selected, including the saved/pending state before the next /cards.
-        if mode and (mode.get("active") or mode.get("pending")):
-            if mode["mode"] != action:
-                await q.answer("End or reset the current game before choosing another mode.",show_alert=True)
-                return
-
-            # A genuinely active game gets its full controls menu.  A saved
-            # mode has not started yet, so keep the admin on the game-mode
-            # menu rather than showing a misleading controls screen with only
-            # a Back button.
-            if mode.get("active"):
-                kb=await _gm_control_keyboard(gid,mode)
-                await q.answer()
-                await q.edit_message_text(
-                    _gm_control_text(mode),
-                    parse_mode="HTML",
-                    reply_markup=kb,
-                )
-            else:
-                await q.answer()
-                await q.edit_message_text(
-                    _gm_menu_text(mode),
-                    parse_mode="HTML",
-                    reply_markup=_gm_menu_keyboard(gid,mode),
-                )
-            return
-
+        if mode and mode.get("active"):
+            if mode["mode"]!=action:
+                await q.answer("End or reset the current game before choosing another mode.",show_alert=True); return
+            kb=await _gm_control_keyboard(gid,mode)
+            await q.answer(); await q.edit_message_text(_gm_control_text(mode),parse_mode="HTML",reply_markup=kb); return
         _GAME_MODE_DRAFT[(gid,q.from_user.id)]={"mode":action,"value":0}
         await q.answer(); await q.edit_message_text(_gm_start_text(action,0),parse_mode="HTML",reply_markup=_gm_digit_keyboard(gid,action)); return
     if action.startswith("digit:"):
@@ -1610,12 +1617,7 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
         pending = await db.get_game_mode(gid)
         await _post_game_mode_start(context, gid, pending)
         await q.answer("Saved.")
-        await q.edit_message_text(
-            _gm_menu_text(pending),
-            parse_mode="HTML",
-            reply_markup=_gm_menu_keyboard(gid, pending),
-        )
-        return
+        await q.edit_message_text("Saved. Game begins after next completed /cards game.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back",callback_data=_gm_cb(gid,"menu"))]])); return
     if action in ("end","restart"):
         if not mode or not mode.get("active"): await q.answer("No active game mode.",show_alert=True); return
         label="First to x points" if mode["mode"]=="first" else "Highest Score Wins"
@@ -1627,23 +1629,11 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
         if action=="confirm_end":
             await db.end_game_mode(gid); msg="Game ended and leaderboard cleared."
         else:
-            await db.reset_game_mode_for_restart(gid)
+            await db.reset_game_mode_for_restart(gid); msg="Game restarted. Game begins after next completed /cards game."
             restarted = await db.get_game_mode(gid)
             await _post_game_mode_start(context, gid, restarted)
         for job in context.job_queue.get_jobs_by_name(f"modeend:{gid}"): job.schedule_removal()
-        await q.answer()
-        if action == "confirm_restart":
-            await q.edit_message_text(
-                _gm_menu_text(restarted),
-                parse_mode="HTML",
-                reply_markup=_gm_menu_keyboard(gid, restarted),
-            )
-        else:
-            await q.edit_message_text(
-                msg,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back",callback_data=_gm_cb(gid,"menu"))]]),
-            )
-        return
+        await q.answer(); await q.edit_message_text(msg,reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back",callback_data=_gm_cb(gid,"menu"))]])); return
     if action.startswith("history:"):
         which=action.split(":",1)[1]
         if not await db.game_mode_history_exists(gid,which): await q.answer("No winner history recorded.",show_alert=True); return
@@ -1694,11 +1684,6 @@ async def resetlb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 
-async def delete_message_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    data = context.job.data or {}
-    await _delete_quietly(context.bot, data["chat_id"], data["message_id"])
-
-
 async def reset_timeout_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     data = context.job.data or {}
     await _delete_quietly(context.bot, data["chat_id"], data["message_id"])
@@ -1739,7 +1724,14 @@ async def resetlb_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         msg = "Tomochi Cards Leaderboard Reset!"
     else:
         msg = "Tomochi Cards Leaderboard Reset!"
-    await context.bot.send_message(chat.id, msg, parse_mode="HTML")
+    result_msg = await context.bot.send_message(chat.id, msg, parse_mode="HTML")
+    await _delete_after_seconds(
+        context,
+        chat.id,
+        result_msg.message_id,
+        12,
+        f"resetlb-result:{chat.id}:{result_msg.message_id}",
+    )
 
 
 async def hourly_job(context: ContextTypes.DEFAULT_TYPE) -> None:
