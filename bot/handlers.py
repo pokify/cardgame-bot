@@ -450,8 +450,8 @@ def _house_confirm_text(
         reward = int(pvp["house_reward"])
         remaining = max(0, int(remaining if remaining is not None else max_plays))
         return (
-            f"House: -{risk} loss/+{reward} win ♠ daily limit: {max_plays} ♣ "
-            f"{who} {remaining} house challenges remaining ♦ click Challenge House to continue"
+            f"House: -{risk} loss/+{reward} win \n♠ daily limit: {max_plays} \n♣ "
+            f"{who} {remaining} house challenges remaining \n♦ click Challenge House to continue"
         )
     if rr_on:
         risk = int(pvp["house_risk"])
