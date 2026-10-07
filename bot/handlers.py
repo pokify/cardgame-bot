@@ -1284,11 +1284,12 @@ def _game_mode_duration(days: int) -> str:
 def _game_mode_start_text(mode: dict) -> str:
     if mode.get("mode") == "highest":
         return (
-            "New Highest Score Wins game started!\n"
+            "<b>Tomochi Cards</b>\n\nNew Highest Score Wins game started!\n"
             f"Ends: {_game_mode_duration(int(mode.get('days') or 0))}"
         )
     target = int(mode.get("target") or 0)
     return (
+        "<b>Tomochi Cards</b>\n\n"
         f"New First to {target} Points game started!\n"
         f"Target: {target}"
     )
