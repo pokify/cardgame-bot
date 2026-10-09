@@ -709,6 +709,7 @@ async def _run_house_challenge(
         chat_id,
         result,
         parse_mode="HTML",
+        reply_markup=_blank_outcome_markup(),
         disable_web_page_preview=True,
     )
 
@@ -811,6 +812,7 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
         chat_id,
         result,
         parse_mode="HTML",
+        reply_markup=_blank_outcome_markup(),
         disable_web_page_preview=True,
     )
 
@@ -931,6 +933,9 @@ async def houseconfig_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def houseconfig_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    if query.data == "hc:noop":
+        await query.answer()
+        return
     chat = query.message.chat
     user = query.from_user
     if not await _is_admin(context, chat.id, user.id):
@@ -1361,6 +1366,11 @@ def _game_mode_start_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton("Play Cards", callback_data="playcards")]]
     )
+
+
+def _blank_outcome_markup() -> InlineKeyboardMarkup:
+    # Telegram requires button text; an invisible separator keeps it visually blank.
+    return InlineKeyboardMarkup([[InlineKeyboardButton("\u2063", callback_data="hc:noop")]])
 
 
 def _leaderboard_markup() -> InlineKeyboardMarkup:
