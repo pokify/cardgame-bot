@@ -134,6 +134,9 @@ async def init_schema() -> None:
             """
         )
         await conn.execute(
+            "ALTER TABLE game_modes ADD COLUMN IF NOT EXISTS bump_alert_minutes INTEGER NOT NULL DEFAULT 30"
+        )
+        await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS game_mode_history (
                 chat_id BIGINT NOT NULL,
@@ -571,6 +574,14 @@ async def save_game_mode_pending(chat_id: int, mode: str, target: int = 0, days:
         """,
         chat_id, mode, max(0,int(target)), max(0,int(days)),
     )
+
+
+async def set_game_mode_bump_alert(chat_id: int, minutes: int) -> dict | None:
+    row = await pool().fetchrow(
+        "UPDATE game_modes SET bump_alert_minutes=$2 WHERE chat_id=$1 RETURNING *",
+        chat_id, max(0, int(minutes)),
+    )
+    return dict(row) if row else None
 
 
 async def activate_game_mode(chat_id: int) -> dict | None:

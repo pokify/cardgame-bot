@@ -732,6 +732,12 @@ async def _run_house_challenge(
     except Exception:
         log.exception("Could not process House game-mode bookkeeping for game %s", game_id)
 
+    await _schedule_game_bump(context, chat_id)
+    lb_text = await _cards_lb(chat_id)
+    await context.bot.send_message(
+        chat_id, lb_text, parse_mode="HTML", reply_markup=_leaderboard_markup(),
+        disable_web_page_preview=True,
+    )
 
 
 async def expire_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -820,6 +826,12 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
         joker_points,
     )
     await _record_mode_after_cards(context, chat_id, players)
+    await _schedule_game_bump(context, chat_id)
+    lb_text = await _cards_lb(chat_id)
+    await context.bot.send_message(
+        chat_id, lb_text, parse_mode="HTML", reply_markup=_leaderboard_markup(),
+        disable_web_page_preview=True,
+    )
 
 
 async def cancelcards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1108,7 +1120,8 @@ def _gm_menu_text(mode):
 def _gm_menu_keyboard(group_id:int,mode):
     if mode and (mode.get("active") or mode.get("pending")):
         rows=[[InlineKeyboardButton("Highest Score Wins",callback_data=_gm_cb(group_id,"highest")),
-               InlineKeyboardButton("First to x Score",callback_data=_gm_cb(group_id,"first"))]]
+               InlineKeyboardButton("First to x Score",callback_data=_gm_cb(group_id,"first"))],
+              [InlineKeyboardButton("Game Bump Alert",callback_data=_gm_cb(group_id,"bump"))]]
     else:
         rows=[[InlineKeyboardButton("Start New Game",callback_data=_gm_cb(group_id,"new"))]]
     return InlineKeyboardMarkup(rows)
@@ -1251,12 +1264,12 @@ def _mode_status_html(mode:dict,rows:list)->str:
                 elif remaining <= 3 * 86400:
                     total_minutes = max(0, int(remaining // 60))
                     hours, minutes = divmod(total_minutes, 60)
-                    end = f"{hours:02d}:{minutes:02d}"
+                    end = f"{hours:02d}:{minutes:02d}mins"
                 else:
                     whole_days = int(remaining // 86400)
                     remainder_minutes = int((remaining % 86400) // 60)
                     hours, minutes = divmod(remainder_minutes, 60)
-                    end = f"{whole_days} days {hours:02d}:{minutes:02d}"
+                    end = f"{whole_days} days {hours:02d}:{minutes:02d}mins"
         lines=["<b>Game: Highest Score Wins</b>",f"Ends: {end}"]
     if mode.get("winner_user_id"):
         lines.append(f"Winner: {str(mode.get('winner_username') or mode['winner_user_id']).lstrip('@')}")
@@ -1584,6 +1597,75 @@ async def gamemode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     return
 
 
+def _bump_digit_keyboard(group_id: int) -> InlineKeyboardMarkup:
+    rows = []
+    for nums in (("1", "2", "3"), ("4", "5", "6"), ("7", "8", "9")):
+        rows.append([InlineKeyboardButton(n, callback_data=_gm_cb(group_id, f"bumpdigit:{n}")) for n in nums])
+    rows.append([
+        InlineKeyboardButton("<", callback_data=_gm_cb(group_id, "bumpdigit:del")),
+        InlineKeyboardButton("0", callback_data=_gm_cb(group_id, "bumpdigit:0")),
+    ])
+    rows.append([
+        InlineKeyboardButton("Save", callback_data=_gm_cb(group_id, "bumpsave")),
+        InlineKeyboardButton("Cancel", callback_data=_gm_cb(group_id, "menu")),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def _bump_settings_text(minutes: int) -> str:
+    return (
+        "<b>Set game reminder alert bump.</b>\n\n"
+        f"Alert if game inactive every: {minutes}mins\n\n"
+        "Game bump alert only triggers if an active game mode has not had a completed /cards game "
+        "within the set number of minutes. Set 0 for no alert."
+    )
+
+
+async def _schedule_game_bump(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
+    name = f"gamebump:{chat_id}"
+    for job in context.job_queue.get_jobs_by_name(name):
+        job.schedule_removal()
+    mode = await db.get_game_mode(chat_id)
+    minutes = int((mode or {}).get("bump_alert_minutes", 30) or 0)
+    if not mode or not mode.get("active") or mode.get("winner_user_id") or minutes <= 0:
+        return
+    context.job_queue.run_once(
+        game_bump_job, when=minutes * 60,
+        data={"chat_id": chat_id}, name=name, chat_id=chat_id,
+    )
+
+
+async def game_bump_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = int((context.job.data or {}).get("chat_id") or 0)
+    if not chat_id:
+        return
+    mode = await db.get_game_mode(chat_id)
+    minutes = int((mode or {}).get("bump_alert_minutes", 30) or 0)
+    if not mode or not mode.get("active") or mode.get("winner_user_id") or minutes <= 0:
+        return
+    rows = await db.leaderboard(chat_id)
+    if rows:
+        leader = rows[0]
+        username = str(leader.get("username") or leader.get("first_name") or leader.get("user_id") or "player").lstrip("@")
+        score = int(leader.get("score") or 0)
+    else:
+        username, score = "No players yet", 0
+    if mode.get("mode") == "highest":
+        ends = mode.get("ends_at")
+        remaining = max(0, int((ends - datetime.now(timezone.utc)).total_seconds() // 60)) if ends else 0
+        hours, mins = divmod(remaining, 60)
+        ends_text = f"{hours:02d}:{mins:02d}mins"
+        text = f"<b>Game in play:</b>\n\n<b>Highest Score Wins</b>\n\nLeader: {username}\nPoints: {score}\nEnds: {ends_text}"
+    else:
+        text = f"<b>Game in play:</b>\n\n<b>First to x Points</b>\n\nLeader: {username}\nPoints: {score}"
+    await context.bot.send_message(
+        chat_id, text, parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Play", callback_data="playcards")]]),
+        disable_web_page_preview=True,
+    )
+    await _schedule_game_bump(context, chat_id)
+
+
 async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
     q=update.callback_query; p=q.data.split(":",2)
     if len(p)<3: await q.answer(); return
@@ -1592,6 +1674,31 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
     if not await _is_admin(context,gid,q.from_user.id):
         await q.answer("Admins only.",show_alert=True); return
     action=p[2]; mode=await db.get_game_mode(gid)
+    if action == "bump":
+        if not mode or not (mode.get("active") or mode.get("pending")):
+            await q.answer("Save a game mode first.", show_alert=True); return
+        value = int(mode.get("bump_alert_minutes", 30) or 0)
+        _GAME_MODE_DRAFT[(gid, q.from_user.id)] = {"mode": "bump", "value": value}
+        await q.answer()
+        await q.edit_message_text(_bump_settings_text(value), parse_mode="HTML", reply_markup=_bump_digit_keyboard(gid))
+        return
+    if action.startswith("bumpdigit:"):
+        digit = action.split(":", 1)[1]
+        draft = _GAME_MODE_DRAFT.setdefault((gid, q.from_user.id), {"mode": "bump", "value": 30})
+        value = int(draft.get("value", 30))
+        value = value // 10 if digit == "del" else min(999999, value * 10 + int(digit))
+        draft.update(mode="bump", value=value)
+        await q.answer()
+        await q.edit_message_text(_bump_settings_text(value), parse_mode="HTML", reply_markup=_bump_digit_keyboard(gid))
+        return
+    if action == "bumpsave":
+        draft = _GAME_MODE_DRAFT.pop((gid, q.from_user.id), {"value": 30})
+        updated = await db.set_game_mode_bump_alert(gid, int(draft.get("value", 30)))
+        await _schedule_game_bump(context, gid)
+        await q.answer("Saved.")
+        await q.edit_message_text(_bump_settings_text(int((updated or {}).get("bump_alert_minutes", 30) or 0)), parse_mode="HTML",
+                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=_gm_cb(gid, "menu"))]]))
+        return
     if action=="menu":
         await q.answer(); await q.edit_message_text(_gm_menu_text(mode),parse_mode="HTML",reply_markup=_gm_menu_keyboard(gid,mode)); return
     if action=="new":
