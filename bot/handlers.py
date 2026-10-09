@@ -1239,10 +1239,24 @@ def _mode_status_html(mode:dict,rows:list)->str:
         else:
             ends=mode.get("ends_at")
             remaining=(ends-datetime.now(timezone.utc)).total_seconds() if ends else 0
-            if remaining<=0: end="Ended"
-            elif remaining<=86400: end=f"{max(1,int((remaining+3599)//3600))}hrs"
-            elif int(mode.get("days") or 0) in (1,2,3): end=f"{int(mode['days'])*24}hrs"
-            else: end=f"{int((remaining+86399)//86400)} days"
+            if remaining <= 0:
+                end = "Ended"
+            else:
+                days = max(1, int(mode.get("days") or 1))
+                initial_seconds = days * 86400
+                # At the exact start show the configured duration (e.g. 24hrs).
+                # On later leaderboard views show a live HH:MM countdown.
+                if initial_seconds - remaining < 5:
+                    end = f"{days * 24}hrs" if days <= 3 else f"{days} days"
+                elif remaining <= 3 * 86400:
+                    total_minutes = max(0, int(remaining // 60))
+                    hours, minutes = divmod(total_minutes, 60)
+                    end = f"{hours:02d}:{minutes:02d}"
+                else:
+                    whole_days = int(remaining // 86400)
+                    remainder_minutes = int((remaining % 86400) // 60)
+                    hours, minutes = divmod(remainder_minutes, 60)
+                    end = f"{whole_days} days {hours:02d}:{minutes:02d}"
         lines=["<b>Game: Highest Score Wins</b>",f"Ends: {end}"]
     if mode.get("winner_user_id"):
         lines.append(f"Winner: {str(mode.get('winner_username') or mode['winner_user_id']).lstrip('@')}")
@@ -1275,14 +1289,14 @@ async def _history_text(chat_id:int)->str:
                     last=wins
                 lines.append(
                     f"{rank} {plain_name(row)}\n"
-                    f"Wins: {wins} | Plays :{int(row['plays'])}"
+                    f"Wins: {wins} | Played: {int(row['plays'])}"
                 )
         else:
             for row in rows:
                 wins=int(row["wins"])
                 lines.append(
                     f"{plain_name(row)}\n"
-                    f"Wins: {wins} | Plays :{int(row['plays'])}"
+                    f"Wins: {wins} | Played: {int(row['plays'])}"
                 )
         return "\n".join(lines)
 

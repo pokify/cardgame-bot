@@ -146,6 +146,10 @@ async def init_schema() -> None:
             )
             """
         )
+        # Track participation once per Game Mode tournament, not once per /cards hand.
+        await conn.execute(
+            "ALTER TABLE game_mode_history ADD COLUMN IF NOT EXISTS last_event_started_at TIMESTAMPTZ"
+        )
         await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS deal_memory (
@@ -628,18 +632,33 @@ async def game_mode_history(chat_id: int, mode: str) -> list[asyncpg.Record]:
 
 
 async def game_mode_participation(chat_id: int, mode: str, players: list[dict]) -> None:
+    """Count each player once per Game Mode event, regardless of hands played."""
     if not players:
         return
     async with pool().acquire() as conn:
-        await conn.executemany(
-            """
-            INSERT INTO game_mode_history(chat_id,mode,user_id,username,wins,plays)
-            VALUES($1,$2,$3,$4,0,1)
-            ON CONFLICT(chat_id,mode,user_id) DO UPDATE SET
-                username=EXCLUDED.username,plays=game_mode_history.plays+1
-            """,
-            [(chat_id,mode,int(p["user_id"]),p.get("username")) for p in players],
+        event = await conn.fetchval(
+            "SELECT started_at FROM game_modes WHERE chat_id=$1 AND mode=$2 AND active=TRUE",
+            chat_id, mode,
         )
+        if event is None:
+            return
+        async with conn.transaction():
+            for player in players:
+                await conn.execute(
+                    """
+                    INSERT INTO game_mode_history
+                        (chat_id,mode,user_id,username,wins,plays,last_event_started_at)
+                    VALUES($1,$2,$3,$4,0,1,$5)
+                    ON CONFLICT(chat_id,mode,user_id) DO UPDATE SET
+                        username=EXCLUDED.username,
+                        plays=game_mode_history.plays +
+                            CASE WHEN game_mode_history.last_event_started_at
+                                      IS DISTINCT FROM EXCLUDED.last_event_started_at
+                                 THEN 1 ELSE 0 END,
+                        last_event_started_at=EXCLUDED.last_event_started_at
+                    """,
+                    chat_id, mode, int(player["user_id"]), player.get("username"), event,
+                )
 
 
 async def lock_game_mode_winner(chat_id: int,user_id: int,username: str|None,score: int) -> dict|None:
