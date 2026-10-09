@@ -709,7 +709,6 @@ async def _run_house_challenge(
         chat_id,
         result,
         parse_mode="HTML",
-        reply_markup=winner_keyboard(),
         disable_web_page_preview=True,
     )
 
@@ -812,7 +811,6 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
         chat_id,
         result,
         parse_mode="HTML",
-        reply_markup=winner_keyboard(),
         disable_web_page_preview=True,
     )
 
