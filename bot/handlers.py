@@ -733,6 +733,7 @@ async def _run_house_challenge(
         log.exception("Could not process House game-mode bookkeeping for game %s", game_id)
 
     await _schedule_game_bump(context, chat_id)
+    await asyncio.sleep(5)
     lb_text = await _cards_lb(chat_id)
     await context.bot.send_message(
         chat_id, lb_text, parse_mode="HTML", reply_markup=_leaderboard_markup(),
@@ -827,6 +828,7 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
     )
     await _record_mode_after_cards(context, chat_id, players)
     await _schedule_game_bump(context, chat_id)
+    await asyncio.sleep(5)
     lb_text = await _cards_lb(chat_id)
     await context.bot.send_message(
         chat_id, lb_text, parse_mode="HTML", reply_markup=_leaderboard_markup(),
