@@ -136,7 +136,7 @@ def lobby_text(
             mode_line = f"<b>Game mode: First to {int(mode.get('target') or 0)} points</b>"
 
     if luck_mode:
-        return "\\n".join(line for line in [
+        return "\n".join(line for line in [
             mode_line, "", "", "<b>New hand has started!</b>", "",
             f"♢ Waiting for players… ({n}/{MAX_PLAYERS})", "",
             "1 player auto-plays the House" if n == 1 else None,

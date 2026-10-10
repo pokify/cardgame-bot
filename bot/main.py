@@ -106,7 +106,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(house_cb, pattern=r"^house:\d+$"))
     app.add_handler(CallbackQueryHandler(showlb_cb, pattern=r"^showlb$"))
     app.add_handler(CallbackQueryHandler(lucklb_cb, pattern=r"^lucklb$"))
-    app.add_handler(CallbackQueryHandler(playcards_cb, pattern=r"^playcards$"))
+    app.add_handler(CallbackQueryHandler(playcards_cb, pattern=r"^playcards(?::mode:(?:first|highest))?$"))
     app.add_handler(CallbackQueryHandler(points_cb, pattern=r"^points:\d+$"))
     app.add_handler(CallbackQueryHandler(gamemode_cb, pattern=r"^gm:-?\d+:"))
     app.add_handler(CallbackQueryHandler(resetlb_cb, pattern=r"^resetlb:(yes|no)$"))

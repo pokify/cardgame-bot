@@ -762,7 +762,11 @@ async def _run_house_challenge(
     await asyncio.sleep(5)
     lb_text = await _cards_lb(chat_id)
     await context.bot.send_message(
-        chat_id, lb_text, parse_mode="HTML", reply_markup=_leaderboard_markup(),
+        chat_id, lb_text, parse_mode="HTML",
+        reply_markup=_leaderboard_markup(
+            (await db.get_game_mode(chat_id) or {}).get("mode")
+            if (await db.get_game_mode(chat_id) or {}).get("active") else None
+        ),
         disable_web_page_preview=True,
     )
 
@@ -905,7 +909,11 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
     await asyncio.sleep(5)
     lb_text = await _cards_lb(chat_id)
     await context.bot.send_message(
-        chat_id, lb_text, parse_mode="HTML", reply_markup=_leaderboard_markup(),
+        chat_id, lb_text, parse_mode="HTML",
+        reply_markup=_leaderboard_markup(
+            (await db.get_game_mode(chat_id) or {}).get("mode")
+            if (await db.get_game_mode(chat_id) or {}).get("active") else None
+        ),
         disable_web_page_preview=True,
     )
 
@@ -1456,9 +1464,12 @@ def _blank_outcome_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("\u2063", callback_data="hc:noop")]])
 
 
-def _leaderboard_markup() -> InlineKeyboardMarkup:
+def _leaderboard_markup(mode_name: str | None = None) -> InlineKeyboardMarkup:
+    # A mode-specific callback lets old leaderboard buttons be rejected after
+    # that tournament has ended, instead of accidentally starting Tomochi Luck.
+    callback = f"playcards:mode:{mode_name}" if mode_name in ("first", "highest") else "playcards"
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Play Cards", callback_data="playcards")]]
+        [[InlineKeyboardButton("Play Cards", callback_data=callback)]]
     )
 
 
@@ -1494,9 +1505,30 @@ async def lb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def playcards_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    data = query.data or ""
+    chat = query.message.chat if query.message else None
+    if data.startswith("playcards:mode:") and chat and chat.type in ("group", "supergroup"):
+        expected_mode = data.rsplit(":", 1)[-1]
+        current = await db.get_game_mode(chat.id)
+        # Old tournament buttons must not start the default game after the
+        # tournament ended, or start a different tournament's game.
+        ended = (
+            not current
+            or not current.get("active")
+            or current.get("pending")
+            or current.get("mode") != expected_mode
+            or current.get("winner_user_id") is not None
+        )
+        if expected_mode == "highest" and current and current.get("ends_at"):
+            ends_at = current["ends_at"]
+            if ends_at <= datetime.now(timezone.utc):
+                ended = True
+        if ended:
+            await query.answer("This Game has Ended. Use /cards to play current game", show_alert=True)
+            return
     await query.answer()
     # Reuse the normal /cards path in the group where the button was pressed.
-    if query.message and query.message.chat.type in ("group", "supergroup"):
+    if chat and chat.type in ("group", "supergroup"):
         await cards_cmd(update, context)
 
 
