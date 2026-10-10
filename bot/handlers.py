@@ -796,9 +796,9 @@ async def expire_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def _run_tomochi_luck(context, game_id: int, chat_id: int, players: list[dict]) -> None:
     from bot.config import CARDS
-    await context.bot.send_message(chat_id, "Game started!\\n\\n" + (
-        f"{_plain_player_name(players[0])} vs The House" if len(players) == 1
-        else "Players: " + ", ".join(_plain_player_name(p) for p in players)))
+    await context.bot.send_message(chat_id, "Game started!\n\n" + (
+        f"{mention(players[0].get('username'), players[0].get('first_name'), players[0].get('user_id'))} vs The House" if len(players) == 1
+        else "Players: " + ", ".join(mention(p.get('username'), p.get('first_name'), p.get('user_id')) for p in players)))
     await context.bot.send_message(chat_id, "Dealing...")
     await asyncio.sleep(5)
     pool = [key for key in CARDS if key != "joker"]
@@ -820,12 +820,12 @@ async def _run_tomochi_luck(context, game_id: int, chat_id: int, players: list[d
     await db.tomochi_luck_record_game(chat_id, players, winner_id)
     await db.set_tomochi_luck_leaderboard_visible(chat_id, True)
     if winner_id is None:
-        await context.bot.send_message(chat_id, "Never bet against the House!")
+        await context.bot.send_message(chat_id, "Never bet against the House!", reply_markup=_blank_outcome_markup())
     else:
         stats = next((r for r in await db.tomochi_luck_leaderboard(chat_id, 10000)
                       if int(r["user_id"]) == int(winner_id)), None)
         await context.bot.send_message(chat_id,
-            f"Highest card: {_plain_player_name(winner)}\\nWins: {int(stats['wins']) if stats else 0}\\nWin rate: {float(stats['win_rate']) if stats else 0:g}%")
+            f"Highest card: {mention(winner.get('username'), winner.get('first_name'), winner.get('user_id'))}\nWins: {int(stats['wins']) if stats else 0}\nWin rate: {float(stats['win_rate']) if stats else 0:g}%", parse_mode="HTML", reply_markup=_blank_outcome_markup())
     await asyncio.sleep(5)
     await context.bot.send_message(chat_id, await _tomochi_luck_lb(chat_id), parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Play", callback_data="playcards")]]))
@@ -838,9 +838,12 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
         return
 
     players = await db.list_players(game_id)
+    current_mode = await db.get_game_mode(chat_id)
+    luck_default = not current_mode or not (current_mode.get("active") or current_mode.get("pending"))
     if len(players) < MIN_PLAYERS:
-        await db.set_status(game_id, "expired")
-        return
+        if not (luck_default and len(players) == 1 and await db.tomochi_luck_house_enabled(chat_id)):
+            await db.set_status(game_id, "expired")
+            return
 
     await db.set_status(game_id, "running")
     _cancel_chat_jobs(context, chat_id, game_id)
