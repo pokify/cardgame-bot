@@ -1668,11 +1668,21 @@ async def game_bump_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         text = f"<b>Game in play:</b>\n\n<b>Highest Score Wins</b>\n\nLeader: {username}\nPoints: {score}\nEnds: {ends_text}"
     else:
         text = f"<b>Game in play:</b>\n\n<b>First to x Points</b>\n\nLeader: {username}\nPoints: {score}"
-    await context.bot.send_message(
+    # Remove the previous Game in play reminder for this chat before posting the new one.
+    previous_ids = context.bot_data.setdefault("game_in_play_message_ids", {})
+    previous_id = previous_ids.get(chat_id)
+    if previous_id:
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=previous_id)
+        except Exception:
+            # The old reminder may already have been deleted or become inaccessible.
+            pass
+    sent = await context.bot.send_message(
         chat_id, text, parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Play", callback_data="playcards")]]),
         disable_web_page_preview=True,
     )
+    previous_ids[chat_id] = sent.message_id
     await _schedule_game_bump(context, chat_id)
 
 
