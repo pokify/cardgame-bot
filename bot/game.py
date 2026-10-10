@@ -46,17 +46,14 @@ def player_line(players: list) -> str:
     return ", ".join(parts) if parts else "—"
 
 
-def lobby_keyboard(game_id: int, house_available: bool = True) -> InlineKeyboardMarkup:
+def lobby_keyboard(game_id: int, house_available: bool = True, luck_mode: bool = False) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton("Join Game", callback_data=f"join:{game_id}")]
     ]
-    if house_available:
-        rows.append(
-            [InlineKeyboardButton("Challenge The House", callback_data=f"house:{game_id}")]
-        )
-    rows.append(
-        [InlineKeyboardButton("Points", callback_data=f"points:{game_id}")]
-    )
+    if not luck_mode and house_available:
+        rows.append([InlineKeyboardButton("Challenge The House", callback_data=f"house:{game_id}")])
+    if not luck_mode:
+        rows.append([InlineKeyboardButton("Points", callback_data=f"points:{game_id}")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -129,11 +126,22 @@ def lobby_text(
 
     mode = settings.get("_game_mode") or {}
     mode_line = None
+    luck_mode = mode.get("active") and mode.get("mode") == "luck"
     if mode.get("active"):
-        if mode.get("mode") == "highest":
+        if mode.get("mode") == "luck":
+            mode_line = "<b>Game mode: Tomochi Luck</b>"
+        elif mode.get("mode") == "highest":
             mode_line = "<b>Game mode: Highest Score Wins</b>"
         elif mode.get("mode") == "first":
             mode_line = f"<b>Game mode: First to {int(mode.get('target') or 0)} points</b>"
+
+    if luck_mode:
+        return "\\n".join(line for line in [
+            mode_line, "", "", "<b>New hand has started!</b>", "",
+            f"♢ Waiting for players… ({n}/{MAX_PLAYERS})", "",
+            "1 player auto-plays the House" if n == 1 else None,
+            "", f"Players: {player_line(players)}"
+        ] if line is not None)
 
     lines = [
         mode_line,

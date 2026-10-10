@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
@@ -50,9 +51,34 @@ async def _lobby_lock(game_id: int) -> asyncio.Lock:
         return lock
 
 
+async def _effective_game_mode(chat_id: int) -> dict:
+    mode = await db.get_game_mode(chat_id)
+    if mode and (mode.get("active") or mode.get("pending")):
+        return mode
+    return {"mode": "luck", "active": True, "pending": False, "target": 0, "days": 0,
+            "bump_alert_minutes": await db.tomochi_luck_bump_minutes(chat_id)}
+
+
+async def _tomochi_luck_lb(chat_id: int) -> str:
+    if not await db.tomochi_luck_leaderboard_visible(chat_id):
+        return "<b>Tomochi Luck leaderboard will return after the next completed Tomochi Luck game.</b>"
+    rows = await db.tomochi_luck_leaderboard(chat_id)
+    lines = ["<b>Tomochi Luck Leaderboard</b>", "", "Who’s the luckiest of them all?", ""]
+    for n, row in enumerate(rows, 1):
+        name = str(row["username"] or row["first_name"] or row["user_id"]).replace("<", "").replace(">", "").lstrip("@")
+        lines.append(f"{n} {name}\nWins: {int(row['wins'])} | Played: {int(row['played'])} | Win rate: {float(row['win_rate']):g}%")
+    if not rows:
+        lines.append("No games played yet.")
+    return "\n".join(lines)
+
+
+def _plain_player_name(player) -> str:
+    return str(player.get("username") or player.get("first_name") or "player").lstrip("@").replace("<", "").replace(">", "")
+
+
 async def _lobby_text_for_chat(chat_id: int, players: list, flavor: str | None) -> str:
     settings = await db.get_pvp_settings(chat_id)
-    mode = await db.get_game_mode(chat_id)
+    mode = await _effective_game_mode(chat_id)
     settings = dict(settings or {})
     settings["_game_mode"] = mode
     return lobby_text(players, flavor, settings)
@@ -329,7 +355,7 @@ async def cards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         msg = await message.reply_html(
             await _lobby_text_for_chat(chat.id, players, game["flavor"]),
-            reply_markup=lobby_keyboard(game["id"], house_available=house_on),
+            reply_markup=lobby_keyboard(game["id"], house_available=house_on, luck_mode=(await _effective_game_mode(chat.id)).get("mode") == "luck"),
             disable_web_page_preview=True,
         )
     except Exception:
@@ -398,7 +424,7 @@ async def join_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             run_game = False
             text = await _lobby_text_for_chat(chat.id, players, game["flavor"])
             house_on = await db.house_enabled(chat.id)
-            markup = lobby_keyboard(game_id, house_available=house_on and len(players) <= 1)
+            markup = lobby_keyboard(game_id, house_available=house_on and len(players) <= 1, luck_mode=(await _effective_game_mode(chat.id)).get("mode") == "luck")
 
             # The message that contained the clicked button may already have
             # been replaced by a lobby bump.  Refresh the stored message_id
@@ -751,12 +777,55 @@ async def expire_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     players = await db.list_players(game_id)
     if len(players) < MIN_PLAYERS:
+        mode = await db.get_game_mode(chat_id)
+        luck_default = not mode or not (mode.get("active") or mode.get("pending"))
+        if luck_default and len(players) == 1 and await db.tomochi_luck_house_enabled(chat_id):
+            await _run_game(context, game_id, chat_id)
+            return
         await db.set_status(game_id, "expired")
         _cancel_chat_jobs(context, chat_id, game_id)
         await _delete_quietly(context.bot, chat_id, game["message_id"])
         return
 
     await _run_game(context, game_id, chat_id)
+
+
+async def _run_tomochi_luck(context, game_id: int, chat_id: int, players: list[dict]) -> None:
+    from bot.config import CARDS
+    await context.bot.send_message(chat_id, "Game started!\\n\\n" + (
+        f"{_plain_player_name(players[0])} vs The House" if len(players) == 1
+        else "Players: " + ", ".join(_plain_player_name(p) for p in players)))
+    await context.bot.send_message(chat_id, "Dealing...")
+    await asyncio.sleep(5)
+    pool = [key for key in CARDS if key != "joker"]
+    keys = random.sample(pool, len(players) + (1 if len(players) == 1 else 0))
+    assignments = []
+    for player, key in zip(players, keys):
+        assignments.append({"user_id": player["user_id"], "username": player.get("username"),
+            "first_name": player.get("first_name"), "card_key": key, "score": CARDS[key]["score"],
+            "display_score": CARDS[key]["score"], "label": CARDS[key]["label"]})
+    if len(players) == 1:
+        key = keys[-1]
+        assignments.append({"user_id": -1, "username": None, "first_name": "The House",
+            "card_key": key, "score": CARDS[key]["score"], "display_score": CARDS[key]["score"],
+            "label": CARDS[key]["label"]})
+    winner = max(assignments, key=lambda a: int(a["score"]))
+    await context.bot.send_photo(chat_id, photo=InputFile(render_deal(assignments), filename="deal.png"))
+    await db.save_deal(game_id, assignments, winner["user_id"])
+    winner_id = winner["user_id"] if winner["user_id"] != -1 else None
+    await db.tomochi_luck_record_game(chat_id, players, winner_id)
+    await db.set_tomochi_luck_leaderboard_visible(chat_id, True)
+    if winner_id is None:
+        await context.bot.send_message(chat_id, "Never bet against the House!")
+    else:
+        stats = next((r for r in await db.tomochi_luck_leaderboard(chat_id, 10000)
+                      if int(r["user_id"]) == int(winner_id)), None)
+        await context.bot.send_message(chat_id,
+            f"Highest card: {_plain_player_name(winner)}\\nWins: {int(stats['wins']) if stats else 0}\\nWin rate: {float(stats['win_rate']) if stats else 0:g}%")
+    await asyncio.sleep(5)
+    await context.bot.send_message(chat_id, await _tomochi_luck_lb(chat_id), parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Play", callback_data="playcards")]]))
+    await _schedule_game_bump(context, chat_id)
 
 
 async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: int) -> None:
@@ -774,6 +843,11 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
 
     if game["message_id"]:
         await _delete_quietly(context.bot, chat_id, game["message_id"])
+
+    current_mode = await db.get_game_mode(chat_id)
+    if not current_mode or not (current_mode.get("active") or current_mode.get("pending")):
+        await _run_tomochi_luck(context, game_id, chat_id, players)
+        return
 
     names = ", ".join(mention(p["username"], p["first_name"], p["user_id"]) for p in players)
     pvp = await db.get_pvp_settings(chat_id)
@@ -1116,19 +1190,24 @@ def _gm_menu_text(mode):
     # A saved/pending mode is treated as the current game for the Game Mode
     # menu. The only "Saved..." confirmation is the message shown immediately
     # after saving; subsequent /gamemode calls use the active-game menu.
-    if mode and (mode.get("active") or mode.get("pending")):
-        label="First to x points" if mode["mode"]=="first" else "Highest Score Wins"
-        return f"<b>Start Tomochi Cards game mode</b>\n\nGame mode active: {label}"
-    return "<b>Start Tomochi Cards game mode</b>"
+    if not mode or not (mode.get("active") or mode.get("pending")):
+        return "<b>Start Tomochi Cards game mode</b>\n\nGame mode active: Tomochi Luck"
+    if mode.get("mode") == "luck":
+        return "<b>Start Tomochi Cards game mode</b>\n\nGame mode active: Tomochi Luck"
+    label="First to x points" if mode["mode"]=="first" else "Highest Score Wins"
+    return f"<b>Start Tomochi Cards game mode</b>\n\nGame mode active: {label}"
 
 
 def _gm_menu_keyboard(group_id:int,mode):
     if mode and (mode.get("active") or mode.get("pending")):
-        rows=[[InlineKeyboardButton("Highest Score Wins",callback_data=_gm_cb(group_id,"highest")),
-               InlineKeyboardButton("First to x Score",callback_data=_gm_cb(group_id,"first"))],
+        rows=[[InlineKeyboardButton("Highest Score Wins",callback_data=_gm_cb(group_id,"highest"))],
+              [InlineKeyboardButton("First to x Points",callback_data=_gm_cb(group_id,"first"))],
+              [InlineKeyboardButton("Tomochi Luck",callback_data=_gm_cb(group_id,"luck"))],
               [InlineKeyboardButton("Game Bump Alert",callback_data=_gm_cb(group_id,"bump"))]]
     else:
-        rows=[[InlineKeyboardButton("Start New Game",callback_data=_gm_cb(group_id,"new"))]]
+        rows=[[InlineKeyboardButton("Highest Score Wins",callback_data=_gm_cb(group_id,"highest"))],
+              [InlineKeyboardButton("First to x Points",callback_data=_gm_cb(group_id,"first"))],
+              [InlineKeyboardButton("Tomochi Luck",callback_data=_gm_cb(group_id,"luck"))]]
     return InlineKeyboardMarkup(rows)
 
 
@@ -1242,6 +1321,8 @@ async def _record_mode_after_cards(context,chat_id:int,players:list):
         winner=await db.check_first_to_winner(chat_id)
         if winner:
             await _mode_announce_winner(context,chat_id,winner)
+            await db.end_game_mode(chat_id)
+            await db.set_tomochi_luck_leaderboard_visible(chat_id, False)
 
 
 def _mode_status_html(mode:dict,rows:list)->str:
@@ -1383,6 +1464,8 @@ def _leaderboard_markup() -> InlineKeyboardMarkup:
 
 async def _cards_lb(chat_id: int) -> str:
     mode = await db.get_game_mode(chat_id)
+    if not mode or not (mode.get("active") or mode.get("pending")):
+        return await _tomochi_luck_lb(chat_id)
     if mode and mode.get("pending") and not mode.get("active"):
         return _game_mode_start_text(mode)
     rows = await db.leaderboard(chat_id)
@@ -1415,6 +1498,15 @@ async def playcards_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # Reuse the normal /cards path in the group where the button was pressed.
     if query.message and query.message.chat.type in ("group", "supergroup"):
         await cards_cmd(update, context)
+
+
+async def lucklb_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    await q.answer()
+    chat = q.message.chat if q.message else None
+    if chat and chat.type in ("group", "supergroup"):
+        await context.bot.send_message(chat.id, await _tomochi_luck_lb(chat.id), parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Play", callback_data="playcards")]]))
 
 
 async def points_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1636,8 +1728,9 @@ async def _schedule_game_bump(context: ContextTypes.DEFAULT_TYPE, chat_id: int) 
     for job in context.job_queue.get_jobs_by_name(name):
         job.schedule_removal()
     mode = await db.get_game_mode(chat_id)
-    minutes = int((mode or {}).get("bump_alert_minutes", 30) or 0)
-    if not mode or not mode.get("active") or mode.get("winner_user_id") or minutes <= 0:
+    luck_default = not mode or not (mode.get("active") or mode.get("pending"))
+    minutes = await db.tomochi_luck_bump_minutes(chat_id) if luck_default else int((mode or {}).get("bump_alert_minutes", 30) or 0)
+    if (not luck_default and (not mode.get("active") or mode.get("winner_user_id"))) or minutes <= 0:
         return
     context.job_queue.run_once(
         game_bump_job, when=minutes * 60,
@@ -1650,8 +1743,20 @@ async def game_bump_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     if not chat_id:
         return
     mode = await db.get_game_mode(chat_id)
-    minutes = int((mode or {}).get("bump_alert_minutes", 30) or 0)
-    if not mode or not mode.get("active") or mode.get("winner_user_id") or minutes <= 0:
+    luck_default = not mode or not (mode.get("active") or mode.get("pending"))
+    minutes = await db.tomochi_luck_bump_minutes(chat_id) if luck_default else int((mode or {}).get("bump_alert_minutes", 30) or 0)
+    if (not luck_default and (not mode.get("active") or mode.get("winner_user_id"))) or minutes <= 0:
+        return
+    if luck_default:
+        text = "<b>Game in play:</b>\\n\\n<b>Tomochi Luck</b>\\n\\nTry your luck 😏"
+        ids = context.bot_data.setdefault("game_in_play_message_ids", {})
+        if ids.get(chat_id):
+            await _delete_quietly(context.bot, chat_id, ids[chat_id])
+        sent = await context.bot.send_message(chat_id, text, parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Play", callback_data="playcards")],
+                [InlineKeyboardButton("View Leaderboard", callback_data="lucklb")]]))
+        ids[chat_id] = sent.message_id
+        await _schedule_game_bump(context, chat_id)
         return
     rows = await db.leaderboard(chat_id)
     if rows:
@@ -1696,8 +1801,9 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
     action=p[2]; mode=await db.get_game_mode(gid)
     if action == "bump":
         if not mode or not (mode.get("active") or mode.get("pending")):
-            await q.answer("Save a game mode first.", show_alert=True); return
-        value = int(mode.get("bump_alert_minutes", 30) or 0)
+            value = await db.tomochi_luck_bump_minutes(gid)
+        else:
+            value = int(mode.get("bump_alert_minutes", 30) or 0)
         _GAME_MODE_DRAFT[(gid, q.from_user.id)] = {"mode": "bump", "value": value}
         await q.answer()
         await q.edit_message_text(_bump_settings_text(value), parse_mode="HTML", reply_markup=_bump_digit_keyboard(gid))
@@ -1713,7 +1819,12 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
         return
     if action == "bumpsave":
         draft = _GAME_MODE_DRAFT.pop((gid, q.from_user.id), {"value": 30})
-        updated = await db.set_game_mode_bump_alert(gid, int(draft.get("value", 30)))
+        current_mode = await db.get_game_mode(gid)
+        if not current_mode or not (current_mode.get("active") or current_mode.get("pending")):
+            await db.set_tomochi_luck_bump_minutes(gid, int(draft.get("value", 30)))
+            updated = {"bump_alert_minutes": int(draft.get("value", 30))}
+        else:
+            updated = await db.set_game_mode_bump_alert(gid, int(draft.get("value", 30)))
         await _schedule_game_bump(context, gid)
         await q.answer("Saved.")
         await q.edit_message_text(_bump_settings_text(int((updated or {}).get("bump_alert_minutes", 30) or 0)), parse_mode="HTML",
@@ -1727,6 +1838,37 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
             [InlineKeyboardButton("Highest Score Wins",callback_data=_gm_cb(gid,"highest"))],
             [InlineKeyboardButton("First to x Score",callback_data=_gm_cb(gid,"first"))],
             [InlineKeyboardButton("Cancel",callback_data=_gm_cb(gid,"menu"))]])); return
+    if action == "luck":
+        enabled = await db.tomochi_luck_house_enabled(gid)
+        await q.answer()
+        await q.edit_message_text("<b>Tomochi Luck settings</b>", parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Disable House" if enabled else "Enable House", callback_data=_gm_cb(gid,"lucktoggle"))],
+                [InlineKeyboardButton("Clear Luck Leaderboard", callback_data=_gm_cb(gid,"luckclear"))],
+                [InlineKeyboardButton("Back", callback_data=_gm_cb(gid,"menu"))]]))
+        return
+    if action == "lucktoggle":
+        enabled = await db.tomochi_luck_house_enabled(gid)
+        await db.set_tomochi_luck_house_enabled(gid, not enabled)
+        await q.answer("Saved.")
+        await q.edit_message_text("<b>Tomochi Luck settings</b>", parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Disable House" if not enabled else "Enable House", callback_data=_gm_cb(gid,"lucktoggle"))],
+                [InlineKeyboardButton("Clear Luck Leaderboard", callback_data=_gm_cb(gid,"luckclear"))],
+                [InlineKeyboardButton("Back", callback_data=_gm_cb(gid,"menu"))]]))
+        return
+    if action == "luckclear":
+        await q.answer()
+        await q.edit_message_text("Completely clear Tomochi Luck Leaderboard stats and History.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Clear", callback_data=_gm_cb(gid,"luckclearconfirm")),
+                                                InlineKeyboardButton("Cancel", callback_data=_gm_cb(gid,"luck"))]]))
+        return
+    if action == "luckclearconfirm":
+        await db.clear_tomochi_luck(gid)
+        await q.answer("Cleared.")
+        await q.edit_message_text("Tomochi Luck leaderboard and history cleared.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=_gm_cb(gid,"menu"))]]))
+        return
     if action in ("highest","first"):
         # A pending/saved mode is already the current game for Game Mode
         # controls. Treat it exactly like an active mode here so selecting
@@ -1750,6 +1892,7 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
         which=action.split(":",1)[1]; draft=_GAME_MODE_DRAFT.pop((gid,q.from_user.id),{"value":0})
         v=max(0,int(draft["value"]))
         cancelled = await db.reset_group(gid)
+        await db.set_tomochi_luck_leaderboard_visible(gid, False)
         for game in cancelled:
             _cancel_chat_jobs(context, gid, game["id"])
             await _delete_quietly(context.bot, gid, game["message_id"])
@@ -1773,7 +1916,9 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
     if action in ("confirm_end","confirm_restart"):
         await db.reset_group(gid)
         if action=="confirm_end":
-            await db.end_game_mode(gid); msg="Game ended and leaderboard cleared."
+            await db.end_game_mode(gid)
+            await db.set_tomochi_luck_leaderboard_visible(gid, False)
+            msg="Game ended and leaderboard cleared."
         else:
             await db.reset_game_mode_for_restart(gid); msg="Game restarted. Game begins after next completed /cards game."
             restarted = await db.get_game_mode(gid)
@@ -1809,6 +1954,10 @@ async def resetlb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     mode = await db.get_game_mode(chat.id)
+    if not mode or not (mode.get("active") or mode.get("pending")):
+        msg = await context.bot.send_message(chat.id, "Reset Tomochi Luck leaderboard only in /gamemode")
+        await _delete_after_seconds(context, chat.id, msg.message_id, 12, f"resetlb-result:{chat.id}:{msg.message_id}")
+        return
     if mode and mode.get("active"):
         label = "First to x points" if mode["mode"] == "first" else "Highest Score Wins"
         prompt_text = (
@@ -1899,7 +2048,7 @@ async def _open_auto_lobby(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> 
         chat_id,
         await _lobby_text_for_chat(chat_id, [], game["flavor"]),
         parse_mode="HTML",
-        reply_markup=lobby_keyboard(game["id"], house_available=await db.house_enabled(chat_id)),
+        reply_markup=lobby_keyboard(game["id"], house_available=await db.house_enabled(chat_id), luck_mode=(await _effective_game_mode(chat_id)).get("mode") == "luck"),
         disable_web_page_preview=True,
     )
     await db.set_message_id(game["id"], msg.message_id)

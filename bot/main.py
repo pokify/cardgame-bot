@@ -26,6 +26,7 @@ from bot.handlers import (
     houseconfig_cmd,
     join_cb,
     lb_cmd,
+    lucklb_cb,
     pvpconfig_cb,
     pvpconfig_cmd,
     playcards_cb,
@@ -104,6 +105,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(join_cb, pattern=r"^join:\d+$"))
     app.add_handler(CallbackQueryHandler(house_cb, pattern=r"^house:\d+$"))
     app.add_handler(CallbackQueryHandler(showlb_cb, pattern=r"^showlb$"))
+    app.add_handler(CallbackQueryHandler(lucklb_cb, pattern=r"^lucklb$"))
     app.add_handler(CallbackQueryHandler(playcards_cb, pattern=r"^playcards$"))
     app.add_handler(CallbackQueryHandler(points_cb, pattern=r"^points:\d+$"))
     app.add_handler(CallbackQueryHandler(gamemode_cb, pattern=r"^gm:-?\d+:"))
