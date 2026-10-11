@@ -15,10 +15,10 @@ ALWAYS_LINES = [
     "Full send, no fold 😎",
     "You win, you ape 💀",
     "One hand away from greatness 🤩",
-    "Are u sure? Mototo is dealing 😭",
-    "In Poki we trust 🙏",
-    "Drinks are on Roz! 🐰",
-    "A bit of luck from Luna! 😘",
+    "Are u sure? Mototo is dealing <tg-emoji emoji-id=\"5936233170641889180\">😃</tg-emoji>",
+    "In Poki we trust <tg-emoji emoji-id=\"5881723747823524353\">😏</tg-emoji>",
+    "Drinks are on Roz! <tg-emoji emoji-id=\"5933961609683673255\">😏</tg-emoji>",
+    "A bit of luck from Luna! <tg-emoji emoji-id=\"5935913023779649970\">☺️</tg-emoji>",
 ]
 
 NOT_FIRST_LINES = [

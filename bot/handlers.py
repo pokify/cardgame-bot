@@ -34,6 +34,9 @@ BUMP_SECONDS = 30
 RESET_TIMEOUT = 12
 NEW_GAME_IMAGE = Path(__file__).resolve().parent.parent / "assets" / "gameimages" / "newgame.png"
 
+_TOMOCHI_HOUSE_EMOJI_IDS = ("5936283026622259163", "5933745718857574033", "5962888046918506770")
+_tomochi_house_emoji_index = 0
+
 # Serialize lobby message updates for each game.  A join and a scheduled
 # lobby bump must never read/send/update the lobby concurrently, otherwise
 # the bump can overwrite a freshly joined player with a stale player list.
@@ -827,10 +830,22 @@ async def expire_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def _run_tomochi_luck(context, game_id: int, chat_id: int, players: list[dict]) -> None:
     from bot.config import CARDS
-    await context.bot.send_message(chat_id, "Game started!\n\n" + (
-        f"{mention(players[0].get('username'), players[0].get('first_name'), players[0].get('user_id'))} vs The House" if len(players) == 1
-        else "Players: " + ", ".join(mention(p.get('username'), p.get('first_name'), p.get('user_id')) for p in players)),
-        parse_mode="HTML")
+    global _tomochi_house_emoji_index
+    if len(players) == 1:
+        house_emoji_id = _TOMOCHI_HOUSE_EMOJI_IDS[
+            _tomochi_house_emoji_index % len(_TOMOCHI_HOUSE_EMOJI_IDS)
+        ]
+        _tomochi_house_emoji_index += 1
+        started_text = (
+            "Game started!\\n\\n"
+            f"{mention(players[0].get('username'), players[0].get('first_name'), players[0].get('user_id'))} "
+            f"vs The House <tg-emoji emoji-id=\"{house_emoji_id}\">⚔️</tg-emoji>"
+        )
+    else:
+        started_text = "Game started!\\n\\nPlayers: " + ", ".join(
+            mention(p.get('username'), p.get('first_name'), p.get('user_id')) for p in players
+        )
+    await context.bot.send_message(chat_id, started_text, parse_mode="HTML")
     await context.bot.send_message(chat_id, "Dealing...")
     await asyncio.sleep(5)
     pool = [key for key in CARDS if key != "joker"]
@@ -856,7 +871,7 @@ async def _run_tomochi_luck(context, game_id: int, chat_id: int, players: list[d
         player = players[0] if players else {}
         player_tag = mention(player.get("username"), player.get("first_name"), player.get("user_id", 0))
         await context.bot.send_message(chat_id,
-            f"Highest card: House\n\n{player_tag} You lose!\nNever bet against the House! Better luck next time! 😙",
+            f"Highest card: House\n\n{player_tag} You lose!\nNever bet against the House! Better luck next time! <tg-emoji emoji-id='5936040004487749083'>🧛‍♂️</tg-emoji>",
             parse_mode="HTML", reply_markup=_blank_outcome_markup())
     elif winner_id is None:
         await context.bot.send_message(chat_id, "Highest card: House\n\nNever bet against the House! Better luck next time! 😙", parse_mode="HTML", reply_markup=_blank_outcome_markup())
