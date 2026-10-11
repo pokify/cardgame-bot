@@ -799,7 +799,7 @@ async def expire_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 async def _run_tomochi_luck(context, game_id: int, chat_id: int, players: list[dict]) -> None:
     from bot.config import CARDS
     await context.bot.send_message(chat_id, "Game started!\n\n" + (
-        f"{mention(players[0].get('username'), players[0].get('first_name'), players[0].get('user_id'))} vs The House <tg-emoji emoji-id=\"5962888046918506770\">⚔️</tg-emoji>" if len(players) == 1
+        f"{mention(players[0].get('username'), players[0].get('first_name'), players[0].get('user_id'))} vs The House" if len(players) == 1
         else "Players: " + ", ".join(mention(p.get('username'), p.get('first_name'), p.get('user_id')) for p in players)))
     await context.bot.send_message(chat_id, "Dealing...")
     await asyncio.sleep(5)
