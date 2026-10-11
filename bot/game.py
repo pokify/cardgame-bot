@@ -138,6 +138,7 @@ def lobby_text(
     if luck_mode:
         return "\n".join(line for line in [
             mode_line, "", "", "<b>New hand has started!</b>", "",
+            flavor_block.rstrip("\\n") if flavor_block else None,
             f"♢ Waiting for players… ({n}/{MAX_PLAYERS})", "",
             "1 player auto-plays the House" if n == 1 else None,
             "", f"Players: {player_line(players)}"

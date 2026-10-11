@@ -62,11 +62,13 @@ async def _effective_game_mode(chat_id: int) -> dict:
 async def _tomochi_luck_lb(chat_id: int) -> str:
     if not await db.tomochi_luck_leaderboard_visible(chat_id):
         return "<b>Tomochi Luck leaderboard will return after the next completed Tomochi Luck game.</b>"
-    rows = await db.tomochi_luck_leaderboard(chat_id)
+    rows = await db.tomochi_luck_leaderboard(chat_id, 10000)
+    if not await db.tomochi_luck_house_on_lb(chat_id):
+        rows = [row for row in rows if str(row.get("username") or "").lower() != "house" and int(row.get("user_id") or 0) != 0]
     lines = ["<b>Tomochi Luck Leaderboard</b>", "", "Who’s the luckiest of them all?", ""]
     for n, row in enumerate(rows, 1):
         name = str(row["username"] or row["first_name"] or row["user_id"]).replace("<", "").replace(">", "").lstrip("@")
-        lines.append(f"{n} {name}\nWins: {int(row['wins'])} | Played: {int(row['played'])} | Win rate: {float(row['win_rate']):g}%")
+        lines.append(f"{n} <b>{name}</b>\nWins: {int(row['wins'])} | Played: {int(row['played'])} | Win rate: {float(row['win_rate']):g}%")
     if not rows:
         lines.append("No games played yet.")
     return "\n".join(lines)
@@ -819,8 +821,14 @@ async def _run_tomochi_luck(context, game_id: int, chat_id: int, players: list[d
     winner_id = winner["user_id"] if winner["user_id"] != -1 else None
     await db.tomochi_luck_record_game(chat_id, players, winner_id)
     await db.set_tomochi_luck_leaderboard_visible(chat_id, True)
-    if winner_id is None:
-        await context.bot.send_message(chat_id, "Never bet against the House!", reply_markup=_blank_outcome_markup())
+    if winner_id == 0:
+        player = players[0] if players else {}
+        player_tag = mention(player.get("username"), player.get("first_name"), player.get("user_id", 0))
+        await context.bot.send_message(chat_id,
+            f"Highest card: House\\n\\n{player_tag} You lose!\\nNever bet against the House! Better luck next time! 😙",
+            parse_mode="HTML", reply_markup=_blank_outcome_markup())
+    elif winner_id is None:
+        await context.bot.send_message(chat_id, "Highest card: House\\n\\nNever bet against the House! Better luck next time! 😙", parse_mode="HTML", reply_markup=_blank_outcome_markup())
     else:
         stats = next((r for r in await db.tomochi_luck_leaderboard(chat_id, 10000)
                       if int(r["user_id"]) == int(winner_id)), None)
@@ -1783,7 +1791,7 @@ async def game_bump_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     if (not luck_default and (not mode.get("active") or mode.get("winner_user_id"))) or minutes <= 0:
         return
     if luck_default:
-        text = "<b>Game in play:</b>\\n\\n<b>Tomochi Luck</b>\\n\\nTry your luck 😏"
+        text = "<b>Game in play:</b>\n\n<b>Tomochi Luck</b>\n\nTry your luck 😏"
         ids = context.bot_data.setdefault("game_in_play_message_ids", {})
         if ids.get(chat_id):
             await _delete_quietly(context.bot, chat_id, ids[chat_id])
@@ -1880,6 +1888,7 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("Disable House" if enabled else "Enable House", callback_data=_gm_cb(gid,"lucktoggle"))],
                 [InlineKeyboardButton("Clear Luck Leaderboard", callback_data=_gm_cb(gid,"luckclear"))],
+                [InlineKeyboardButton("House on lb ON" if await db.tomochi_luck_house_on_lb(gid) else "House on lb OFF", callback_data=_gm_cb(gid,"lucklb_toggle"))],
                 [InlineKeyboardButton("Back", callback_data=_gm_cb(gid,"menu"))]]))
         return
     if action == "lucktoggle":
@@ -1890,6 +1899,19 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("Disable House" if not enabled else "Enable House", callback_data=_gm_cb(gid,"lucktoggle"))],
                 [InlineKeyboardButton("Clear Luck Leaderboard", callback_data=_gm_cb(gid,"luckclear"))],
+                [InlineKeyboardButton("House on lb ON" if await db.tomochi_luck_house_on_lb(gid) else "House on lb OFF", callback_data=_gm_cb(gid,"lucklb_toggle"))],
+                [InlineKeyboardButton("Back", callback_data=_gm_cb(gid,"menu"))]]))
+        return
+    if action == "lucklb_toggle":
+        enabled = await db.tomochi_luck_house_on_lb(gid)
+        await db.set_tomochi_luck_house_on_lb(gid, not enabled)
+        await q.answer("Saved.")
+        enabled_now = not enabled
+        await q.edit_message_text("<b>Tomochi Luck settings</b>", parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Disable House" if await db.tomochi_luck_house_enabled(gid) else "Enable House", callback_data=_gm_cb(gid,"lucktoggle"))],
+                [InlineKeyboardButton("Clear Luck Leaderboard", callback_data=_gm_cb(gid,"luckclear"))],
+                [InlineKeyboardButton("House on lb ON" if enabled_now else "House on lb OFF", callback_data=_gm_cb(gid,"lucklb_toggle"))],
                 [InlineKeyboardButton("Back", callback_data=_gm_cb(gid,"menu"))]]))
         return
     if action == "luckclear":

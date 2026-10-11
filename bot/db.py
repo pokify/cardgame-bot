@@ -160,6 +160,7 @@ async def init_schema() -> None:
         await conn.execute("ALTER TABLE tomochi_luck_settings ADD COLUMN IF NOT EXISTS house_enabled BOOLEAN NOT NULL DEFAULT TRUE")
         await conn.execute("ALTER TABLE tomochi_luck_settings ADD COLUMN IF NOT EXISTS bump_alert_minutes INTEGER NOT NULL DEFAULT 30")
         await conn.execute("ALTER TABLE tomochi_luck_settings ADD COLUMN IF NOT EXISTS leaderboard_visible BOOLEAN NOT NULL DEFAULT TRUE")
+        await conn.execute("ALTER TABLE tomochi_luck_settings ADD COLUMN IF NOT EXISTS house_on_lb BOOLEAN NOT NULL DEFAULT TRUE")
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS tomochi_luck_stats (
                 chat_id BIGINT NOT NULL, user_id BIGINT NOT NULL,
@@ -1022,6 +1023,14 @@ async def set_tomochi_luck_leaderboard_visible(chat_id: int, visible: bool) -> N
     await pool().execute("""INSERT INTO tomochi_luck_settings(chat_id,leaderboard_visible) VALUES($1,$2)
         ON CONFLICT(chat_id) DO UPDATE SET leaderboard_visible=EXCLUDED.leaderboard_visible""", chat_id, visible)
 
+async def tomochi_luck_house_on_lb(chat_id: int) -> bool:
+    row = await pool().fetchrow("SELECT house_on_lb FROM tomochi_luck_settings WHERE chat_id=$1", chat_id)
+    return bool(row["house_on_lb"]) if row else True
+
+async def set_tomochi_luck_house_on_lb(chat_id: int, enabled: bool) -> None:
+    await pool().execute("""INSERT INTO tomochi_luck_settings(chat_id,house_on_lb) VALUES($1,$2)
+        ON CONFLICT(chat_id) DO UPDATE SET house_on_lb=EXCLUDED.house_on_lb""", chat_id, enabled)
+
 async def tomochi_luck_leaderboard_visible(chat_id: int) -> bool:
     row = await pool().fetchrow("SELECT leaderboard_visible FROM tomochi_luck_settings WHERE chat_id=$1", chat_id)
     return bool(row["leaderboard_visible"]) if row else True
@@ -1037,6 +1046,15 @@ async def tomochi_luck_record_game(chat_id: int, players: list[dict], winner_use
                     first_name=COALESCE(EXCLUDED.first_name,tomochi_luck_stats.first_name),
                     wins=tomochi_luck_stats.wins+EXCLUDED.wins, played=tomochi_luck_stats.played+1""",
                     chat_id, player["user_id"], player.get("username"), player.get("first_name"), won)
+            # In a one-player Tomochi Luck game, also record the House as a
+            # leaderboard participant so its Played/Wins stats persist.
+            if len(players) == 1:
+                house_won = 1 if winner_user_id == 0 else 0
+                await conn.execute("""INSERT INTO tomochi_luck_stats(chat_id,user_id,username,first_name,wins,played)
+                    VALUES($1,0,'House','House',$2,1) ON CONFLICT(chat_id,user_id) DO UPDATE SET
+                    username='House', first_name='House',
+                    wins=tomochi_luck_stats.wins+EXCLUDED.wins,
+                    played=tomochi_luck_stats.played+1""", chat_id, house_won)
 
 async def tomochi_luck_leaderboard(chat_id: int, limit: int = 15) -> list:
     return await pool().fetch("""SELECT *, CASE WHEN played>0 THEN ROUND(wins::numeric*100/played,1) ELSE 0 END AS win_rate
