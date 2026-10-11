@@ -812,7 +812,7 @@ async def _run_tomochi_luck(context, game_id: int, chat_id: int, players: list[d
             "display_score": CARDS[key]["score"], "label": CARDS[key]["label"]})
     if len(players) == 1:
         key = keys[-1]
-        assignments.append({"user_id": -1, "username": None, "first_name": "The House",
+        assignments.append({"user_id": -1, "username": None, "first_name": "House",
             "card_key": key, "score": CARDS[key]["score"], "display_score": CARDS[key]["score"],
             "label": CARDS[key]["label"]})
     winner = max(assignments, key=lambda a: int(a["score"]))
@@ -1218,15 +1218,10 @@ def _gm_menu_text(mode):
 
 
 def _gm_menu_keyboard(group_id:int,mode):
-    if mode and (mode.get("active") or mode.get("pending")):
-        rows=[[InlineKeyboardButton("Highest Score Wins",callback_data=_gm_cb(group_id,"highest"))],
-              [InlineKeyboardButton("First to x Points",callback_data=_gm_cb(group_id,"first"))],
-              [InlineKeyboardButton("Tomochi Luck",callback_data=_gm_cb(group_id,"luck"))],
-              [InlineKeyboardButton("Game Bump Alert",callback_data=_gm_cb(group_id,"bump"))]]
-    else:
-        rows=[[InlineKeyboardButton("Highest Score Wins",callback_data=_gm_cb(group_id,"highest"))],
-              [InlineKeyboardButton("First to x Points",callback_data=_gm_cb(group_id,"first"))],
-              [InlineKeyboardButton("Tomochi Luck",callback_data=_gm_cb(group_id,"luck"))]]
+    rows=[[InlineKeyboardButton("Highest Score Wins",callback_data=_gm_cb(group_id,"highest"))],
+          [InlineKeyboardButton("First to x Points",callback_data=_gm_cb(group_id,"first"))],
+          [InlineKeyboardButton("Tomochi Luck",callback_data=_gm_cb(group_id,"luck"))],
+          [InlineKeyboardButton("Game Bump Alert",callback_data=_gm_cb(group_id,"bump"))]]
     return InlineKeyboardMarkup(rows)
 
 
