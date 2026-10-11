@@ -818,17 +818,18 @@ async def _run_tomochi_luck(context, game_id: int, chat_id: int, players: list[d
     winner = max(assignments, key=lambda a: int(a["score"]))
     await context.bot.send_photo(chat_id, photo=InputFile(render_deal(assignments), filename="deal.png"))
     await db.save_deal(game_id, assignments, winner["user_id"])
-    winner_id = winner["user_id"] if winner["user_id"] != -1 else None
+    # Store House as user_id 0 so its win is recorded in the Tomochi Luck leaderboard.
+    winner_id = 0 if int(winner["user_id"]) == -1 else int(winner["user_id"])
     await db.tomochi_luck_record_game(chat_id, players, winner_id)
     await db.set_tomochi_luck_leaderboard_visible(chat_id, True)
     if winner_id == 0:
         player = players[0] if players else {}
         player_tag = mention(player.get("username"), player.get("first_name"), player.get("user_id", 0))
         await context.bot.send_message(chat_id,
-            f"Highest card: House\\n\\n{player_tag} You lose!\\nNever bet against the House! Better luck next time! 😙",
+            f"Highest card: House\n\n{player_tag} You lose!\nNever bet against the House! Better luck next time! 😙",
             parse_mode="HTML", reply_markup=_blank_outcome_markup())
     elif winner_id is None:
-        await context.bot.send_message(chat_id, "Highest card: House\\n\\nNever bet against the House! Better luck next time! 😙", parse_mode="HTML", reply_markup=_blank_outcome_markup())
+        await context.bot.send_message(chat_id, "Highest card: House\n\nNever bet against the House! Better luck next time! 😙", parse_mode="HTML", reply_markup=_blank_outcome_markup())
     else:
         stats = next((r for r in await db.tomochi_luck_leaderboard(chat_id, 10000)
                       if int(r["user_id"]) == int(winner_id)), None)
