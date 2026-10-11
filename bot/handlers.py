@@ -65,10 +65,39 @@ async def _tomochi_luck_lb(chat_id: int) -> str:
     rows = await db.tomochi_luck_leaderboard(chat_id, 10000)
     if not await db.tomochi_luck_house_on_lb(chat_id):
         rows = [row for row in rows if str(row.get("username") or "").lower() != "house" and int(row.get("user_id") or 0) != 0]
-    lines = ["<b>Tomochi Luck Leaderboard</b>", "", "Who’s the luckiest of them all?", ""]
+    lines = [
+        "<b>Tomochi Luck Leaderboard</b>",
+        "",
+        'Who’s the luckiest of them all?<tg-emoji emoji-id="5933961609683673255">😏</tg-emoji>',
+        "",
+    ]
+    luck_rank_emojis = {
+        1: ("🍀", "5936069085711310532"),
+        2: ("🎰", "5934046559841820192"),
+        3: ("✌️", "5936143423005269735"),
+        4: ("🧲", "5936076971271266289"),
+        5: ("😌", "5962918390862453991"),
+        6: ("🎻", "5934055407474449435"),
+        7: ("🤕", "5935798193534016200"),
+        8: ("💘", "5933989045934776675"),
+        9: ("💀", "5936276811804581914"),
+        10: ("🎭", "5935885467269472061"),
+    }
+    last_rank = len(rows)
     for n, row in enumerate(rows, 1):
-        name = str(row["username"] or row["first_name"] or row["user_id"]).replace("<", "").replace(">", "").lstrip("@")
-        lines.append(f"{n} <b>{name}</b>\nWins: {int(row['wins'])} | Played: {int(row['played'])} | Win rate: {float(row['win_rate']):g}%")
+        user_id = int(row.get("user_id") or 0)
+        raw_name = "House" if user_id == 0 else (row.get("username") or row.get("first_name") or user_id)
+        name = str(raw_name).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").lstrip("@")
+        if user_id == 0:
+            emoji_fallback, emoji_id = ("🧛‍♂️", "5936040004487749083")
+        elif n >= 10 or (n == last_rank and n != 1):
+            emoji_fallback, emoji_id = ("🎭", "5935885467269472061")
+        else:
+            emoji_fallback, emoji_id = luck_rank_emojis.get(n, luck_rank_emojis[10])
+        rank_emoji = f'<tg-emoji emoji-id="{emoji_id}">{emoji_fallback}</tg-emoji>'
+        lines.append(
+            f"{n}. <b>{name}</b>\n{rank_emoji}Wins: {int(row['wins'])} | Played: {int(row['played'])} | Win rate: {float(row['win_rate']):g}%"
+        )
     if not rows:
         lines.append("No games played yet.")
     return "\n".join(lines)
@@ -800,7 +829,8 @@ async def _run_tomochi_luck(context, game_id: int, chat_id: int, players: list[d
     from bot.config import CARDS
     await context.bot.send_message(chat_id, "Game started!\n\n" + (
         f"{mention(players[0].get('username'), players[0].get('first_name'), players[0].get('user_id'))} vs The House" if len(players) == 1
-        else "Players: " + ", ".join(mention(p.get('username'), p.get('first_name'), p.get('user_id')) for p in players)))
+        else "Players: " + ", ".join(mention(p.get('username'), p.get('first_name'), p.get('user_id')) for p in players)),
+        parse_mode="HTML")
     await context.bot.send_message(chat_id, "Dealing...")
     await asyncio.sleep(5)
     pool = [key for key in CARDS if key != "joker"]
@@ -1787,7 +1817,7 @@ async def game_bump_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     if (not luck_default and (not mode.get("active") or mode.get("winner_user_id"))) or minutes <= 0:
         return
     if luck_default:
-        text = "<b>Game in play:</b>\n\n<b>Tomochi Luck</b>\n\nTry your luck 😏"
+        text = '<b>Game in play:</b>\n\n<b>Tomochi Luck</b>\n\nTry your luck<tg-emoji emoji-id="5933961609683673255">😏</tg-emoji>'
         ids = context.bot_data.setdefault("game_in_play_message_ids", {})
         if ids.get(chat_id):
             await _delete_quietly(context.bot, chat_id, ids[chat_id])
