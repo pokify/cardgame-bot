@@ -837,12 +837,12 @@ async def _run_tomochi_luck(context, game_id: int, chat_id: int, players: list[d
         ]
         _tomochi_house_emoji_index += 1
         started_text = (
-            "Game started!\\n\\n"
+            "Game started!\n\n"
             f"{mention(players[0].get('username'), players[0].get('first_name'), players[0].get('user_id'))} "
             f"vs The House <tg-emoji emoji-id=\"{house_emoji_id}\">⚔️</tg-emoji>"
         )
     else:
-        started_text = "Game started!\\n\\nPlayers: " + ", ".join(
+        started_text = "Game started!\n\nPlayers: " + ", ".join(
             mention(p.get('username'), p.get('first_name'), p.get('user_id')) for p in players
         )
     await context.bot.send_message(chat_id, started_text, parse_mode="HTML")
