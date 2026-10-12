@@ -1079,11 +1079,12 @@ async def houseconfig_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     chat = query.message.chat
     user = query.from_user
-    if not await _is_admin(context, chat.id, user.id):
+    target_gid = int(context.user_data.get("gamemode_chat_id", chat.id)) if chat.type == "private" else chat.id
+    if not await _is_admin(context, target_gid, user.id):
         await query.answer("Admins only.", show_alert=True)
         return
     draft = _house_cfg_draft.setdefault(
-        chat.id, {"house_enabled": True, "max_plays_per_day": None, "pvp_before_unlock": 1}
+        target_gid, {"house_enabled": True, "max_plays_per_day": None, "pvp_before_unlock": 1}
     )
     action = query.data.split(":", 1)[1]
     if action == "noop":
@@ -1195,10 +1196,11 @@ async def pvpconfig_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     query = update.callback_query
     chat = query.message.chat
     user = query.from_user
-    if not await _is_admin(context, chat.id, user.id):
+    target_gid = int(context.user_data.get("gamemode_chat_id", chat.id)) if chat.type == "private" else chat.id
+    if not await _is_admin(context, target_gid, user.id):
         await query.answer("Admins only.", show_alert=True)
         return
-    draft = _pvp_cfg_draft.setdefault(chat.id, db._default_pvp_settings())
+    draft = _pvp_cfg_draft.setdefault(target_gid, db._default_pvp_settings())
     action = query.data.split(":", 1)[1]
     keymap = {
         "b2": "base_2",
@@ -1215,7 +1217,7 @@ async def pvpconfig_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await query.answer()
         return
     if action == "save":
-        await db.save_pvp_settings(chat.id, draft)
+        await db.save_pvp_settings(target_gid, draft)
         await query.answer("Saved.")
         await query.edit_message_text("points config saved.", reply_markup=None)
         return
@@ -1885,11 +1887,34 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
     if not await _is_admin(context,gid,q.from_user.id):
         await q.answer("Admins only.",show_alert=True); return
     action=p[2]; mode=await db.get_game_mode(gid)
-    if action == "pointsinfo":
-        await q.answer("Points Settings across all game modes where points are rewarded.", show_alert=True)
+    # Show the explanatory alert on the first press; on the next press,
+    # open the corresponding configuration panel for the originating group.
+    info_key = (gid, q.from_user.id, action)
+    seen_info = context.user_data.setdefault("_gm_settings_info_seen", set())
+    if action in ("pointsinfo", "houseinfo") and info_key not in seen_info:
+        seen_info.add(info_key)
+        message = (
+            "Points Settings across all game modes where points are rewarded."
+            if action == "pointsinfo" else
+            "House challenges settings across all game modes apart from Tomochi Luck. Tomochi Luck house settings found in Tomochi Luck menu."
+        )
+        await q.answer(message, show_alert=True)
         return
-    if action == "houseinfo":
-        await q.answer("House challenges settings across all game modes apart from Tomochi Luck. Tomochi Luck house settings found in Tomochi Luck menu.", show_alert=True)
+    if action in ("pointsinfo", "houseinfo"):
+        seen_info.discard(info_key)
+        await q.answer()
+        if action == "pointsinfo":
+            draft = await db.get_pvp_settings(gid)
+            _pvp_cfg_draft[gid] = draft
+            await q.message.reply_text(_pvp_cfg_text(draft), parse_mode="HTML", reply_markup=_pvp_cfg_keyboard(draft))
+        else:
+            settings = await db.get_house_settings(gid)
+            _house_cfg_draft[gid] = {
+                "house_enabled": settings["house_enabled"],
+                "max_plays_per_day": settings["max_plays_per_day"],
+                "pvp_before_unlock": max(0, int(settings.get("pvp_before_unlock", 1))),
+            }
+            await q.message.reply_text(_house_cfg_text(_house_cfg_draft[gid]), parse_mode="HTML", reply_markup=_house_cfg_keyboard(_house_cfg_draft[gid]))
         return
     if action == "bump":
         if not mode or not (mode.get("active") or mode.get("pending")):
