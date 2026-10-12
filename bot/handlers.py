@@ -105,13 +105,14 @@ async def _tomochi_luck_lb(chat_id: int) -> str:
         rank_emoji = f'<tg-emoji emoji-id="{emoji_id}">{emoji_fallback}</tg-emoji>'
         old_rank = previous_ranks.get(user_id)
         if old_rank is not None and old_rank > n:
-            movement_prefix = "↑ "
+            # Arrow sits one space before the emoji; keep emoji aligned with rank.
+            movement_prefix = "   ↑ "
         elif old_rank is not None and old_rank < n:
-            movement_prefix = "↓ "
+            movement_prefix = "   ↓ "
         else:
-            movement_prefix = "\u2007"
+            movement_prefix = "     "
         lines.append(
-            f"{n}. <b>{name}</b>\n{movement_prefix}{rank_emoji} W:{int(row['wins'])} | P:{int(row['played'])} | Win rate: {float(row['win_rate']):g}%"
+            f"     {n}. <b>{name}</b>\\n{movement_prefix}{rank_emoji} W:{int(row['wins'])} | P:{int(row['played'])} | Win rate: {float(row['win_rate']):g}%"
         )
     if not rows:
         lines.append("No games played yet.")
