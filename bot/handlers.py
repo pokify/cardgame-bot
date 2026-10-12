@@ -99,7 +99,7 @@ async def _tomochi_luck_lb(chat_id: int) -> str:
             emoji_fallback, emoji_id = luck_rank_emojis.get(n, luck_rank_emojis[10])
         rank_emoji = f'<tg-emoji emoji-id="{emoji_id}">{emoji_fallback}</tg-emoji>'
         lines.append(
-            f"{n}. <b>{name}</b>\n{rank_emoji} W:{int(row['wins'])} | Played:{int(row['played'])} | W rate:{float(row['win_rate']):g}%"
+            f"{n}. <b>{name}</b>\n{rank_emoji} W:{int(row['wins'])} | P:{int(row['played'])} | W rate: {float(row['win_rate']):g}%"
         )
     if not rows:
         lines.append("No games played yet.")
