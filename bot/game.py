@@ -14,7 +14,7 @@ ALWAYS_LINES = [
     "Balls tingling <tg-emoji emoji-id=\"5881767088338512130\">😉</tg-emoji>",
     "Full send, no fold <tg-emoji emoji-id=\"5963040535437383118\">😎</tg-emoji>",
     "You win, you ape <tg-emoji emoji-id=\"5936276811804581914\">💀</tg-emoji>",
-    "One hand away from greatness 🤩",
+    "One hand away from greatness <tg-emoji emoji-id=\"5936202100848467433\">⭐️</tg-emoji>",
     "Are u sure? Mototo is dealing <tg-emoji emoji-id=\"5936233170641889180\">😃</tg-emoji>",
     "In Poki we trust <tg-emoji emoji-id=\"5881723747823524353\">😏</tg-emoji>",
     "Drinks are on Roz! <tg-emoji emoji-id=\"5933961609683673255\">😏</tg-emoji>",
