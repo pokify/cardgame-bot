@@ -52,18 +52,15 @@ async def post_init(application: Application) -> None:
     private_commands = [
         BotCommand("cards", "Start Tomochi Cards"),
         BotCommand("cardslb", "Show cards leaderboard"),
-        BotCommand("gamemode", "Set game mode"),
+        BotCommand("gamemode", "All games settings"),
         BotCommand("history", "Show game mode winners history"),
     ]
     group_commands = [
         BotCommand("cards", "Start Tomochi Cards"),
         BotCommand("cancelcards", "Cancel new game"),
         BotCommand("cardslb", "Show cards leaderboard"),
-        BotCommand("gamemode", "Set game mode"),
-        BotCommand("history", "Show game mode winners history"),
+        BotCommand("gamemode", "All games settings"),
         BotCommand("resetlb", "Reset cards leaderboard"),
-        BotCommand("confighouse", "Config house"),
-        BotCommand("pvpconfig", "Config game points"),
     ]
     await application.bot.set_my_commands(
         private_commands,

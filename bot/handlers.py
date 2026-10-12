@@ -34,7 +34,7 @@ BUMP_SECONDS = 30
 RESET_TIMEOUT = 12
 NEW_GAME_IMAGE = Path(__file__).resolve().parent.parent / "assets" / "gameimages" / "newgame.png"
 
-_TOMOCHI_HOUSE_EMOJI_IDS = ("5936283026622259163", "5933745718857574033", "5962888046918506770")
+_TOMOCHI_HOUSE_EMOJI_IDS = ("5933745718857574033", "5962888046918506770")
 _tomochi_house_emoji_index = 0
 
 # Serialize lobby message updates for each game.  A join and a scheduled
@@ -1256,18 +1256,20 @@ def _gm_menu_text(mode):
     # menu. The only "Saved..." confirmation is the message shown immediately
     # after saving; subsequent /gamemode calls use the active-game menu.
     if not mode or not (mode.get("active") or mode.get("pending")):
-        return "<b>Start Tomochi Cards game mode</b>\n\nGame mode active: Tomochi Luck"
+        return "<b>Tomochi Cards game settings</b>\n\nGame mode active: Tomochi Luck"
     if mode.get("mode") == "luck":
-        return "<b>Start Tomochi Cards game mode</b>\n\nGame mode active: Tomochi Luck"
+        return "<b>Tomochi Cards game settings</b>\n\nGame mode active: Tomochi Luck"
     label="First to x points" if mode["mode"]=="first" else "Highest Score Wins"
-    return f"<b>Start Tomochi Cards game mode</b>\n\nGame mode active: {label}"
+    return f"<b>Tomochi Cards game settings</b>\n\nGame mode active: {label}"
 
 
 def _gm_menu_keyboard(group_id:int,mode):
     rows=[[InlineKeyboardButton("Highest Score Wins",callback_data=_gm_cb(group_id,"highest"))],
           [InlineKeyboardButton("First to x Points",callback_data=_gm_cb(group_id,"first"))],
           [InlineKeyboardButton("Tomochi Luck",callback_data=_gm_cb(group_id,"luck"))],
-          [InlineKeyboardButton("Game Bump Alert",callback_data=_gm_cb(group_id,"bump"))]]
+          [InlineKeyboardButton("Game Bump Alert",callback_data=_gm_cb(group_id,"bump"))],
+          [InlineKeyboardButton("Points Settings",callback_data=_gm_cb(group_id,"pointsinfo"))],
+          [InlineKeyboardButton("House Settings",callback_data=_gm_cb(group_id,"houseinfo"))]]
     return InlineKeyboardMarkup(rows)
 
 
@@ -1883,6 +1885,12 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
     if not await _is_admin(context,gid,q.from_user.id):
         await q.answer("Admins only.",show_alert=True); return
     action=p[2]; mode=await db.get_game_mode(gid)
+    if action == "pointsinfo":
+        await q.answer("Points Settings across all game modes where points are rewarded.", show_alert=True)
+        return
+    if action == "houseinfo":
+        await q.answer("House challenges settings across all game modes apart from Tomochi Luck. Tomochi Luck house settings found in Tomochi Luck menu.", show_alert=True)
+        return
     if action == "bump":
         if not mode or not (mode.get("active") or mode.get("pending")):
             value = await db.tomochi_luck_bump_minutes(gid)
