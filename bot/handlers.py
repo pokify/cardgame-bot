@@ -62,6 +62,9 @@ async def _effective_game_mode(chat_id: int) -> dict:
             "bump_alert_minutes": await db.tomochi_luck_bump_minutes(chat_id)}
 
 
+_tomochi_luck_previous_ranks: dict[int, dict[int, int]] = {}
+
+
 async def _tomochi_luck_lb(chat_id: int) -> str:
     if not await db.tomochi_luck_leaderboard_visible(chat_id):
         return "<b>Tomochi Luck leaderboard will return after the next completed Tomochi Luck game.</b>"
@@ -87,6 +90,8 @@ async def _tomochi_luck_lb(chat_id: int) -> str:
         10: ("🎭", "5935885467269472061"),
     }
     last_rank = len(rows)
+    previous_ranks = _tomochi_luck_previous_ranks.get(chat_id, {})
+    current_ranks = {int(row.get("user_id") or 0): n for n, row in enumerate(rows, 1)}
     for n, row in enumerate(rows, 1):
         user_id = int(row.get("user_id") or 0)
         raw_name = "House" if user_id == 0 else (row.get("username") or row.get("first_name") or user_id)
@@ -98,11 +103,19 @@ async def _tomochi_luck_lb(chat_id: int) -> str:
         else:
             emoji_fallback, emoji_id = luck_rank_emojis.get(n, luck_rank_emojis[10])
         rank_emoji = f'<tg-emoji emoji-id="{emoji_id}">{emoji_fallback}</tg-emoji>'
+        old_rank = previous_ranks.get(user_id)
+        if old_rank is not None and old_rank > n:
+            movement_prefix = "↑ "
+        elif old_rank is not None and old_rank < n:
+            movement_prefix = "↓ "
+        else:
+            movement_prefix = "\u2007"
         lines.append(
-            f"{n}. <b>{name}</b>\n{rank_emoji} W:{int(row['wins'])} | P:{int(row['played'])} | Win rate: {float(row['win_rate']):g}%"
+            f"{n}. <b>{name}</b>\n{movement_prefix}{rank_emoji} W:{int(row['wins'])} | P:{int(row['played'])} | Win rate: {float(row['win_rate']):g}%"
         )
     if not rows:
         lines.append("No games played yet.")
+    _tomochi_luck_previous_ranks[chat_id] = current_ranks
     return "\n".join(lines)
 
 

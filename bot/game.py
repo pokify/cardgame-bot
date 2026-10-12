@@ -10,10 +10,10 @@ from bot.config import CARDS, LOBBY_SECONDS, MAX_PLAYERS, MIN_PLAYERS
 JOKER_PENALTY = 5
 
 ALWAYS_LINES = [
-    "Feeling lucky? 😚",
-    "Balls tingling 🤧",
-    "Full send, no fold 😎",
-    "You win, you ape 💀",
+    "Feeling lucky? <tg-emoji emoji-id=\"5936069085711310532\">🍀</tg-emoji>",
+    "Balls tingling <tg-emoji emoji-id=\"5881767088338512130\">😉</tg-emoji>",
+    "Full send, no fold <tg-emoji emoji-id=\"5963040535437383118\">😎</tg-emoji>",
+    "You win, you ape <tg-emoji emoji-id=\"5936276811804581914\">💀</tg-emoji>",
     "One hand away from greatness 🤩",
     "Are u sure? Mototo is dealing <tg-emoji emoji-id=\"5936233170641889180\">😃</tg-emoji>",
     "In Poki we trust <tg-emoji emoji-id=\"5881723747823524353\">😏</tg-emoji>",
@@ -22,15 +22,15 @@ ALWAYS_LINES = [
 ]
 
 NOT_FIRST_LINES = [
-    "Coming for the top spot? 😏",
-    "Luck owes you one 🤔",
-    "No crying 😭",
+    "Coming for the top spot? <tg-emoji emoji-id=\"5962786385042610279\">👑</tg-emoji>",
+    "Luck owes you one <tg-emoji emoji-id=\"5934052315097994710\">💸</tg-emoji>",
+    "No crying <tg-emoji emoji-id=\"5882178030809391269\">😱</tg-emoji>",
 ]
 
 NOT_FIRST_ON_BOARD_LINES = [
-    "Back for more? 😅",
-    "Down bad, doubling down 😤",
-    "Ahh shh, here we go again 😂",
+    "Back for more? <tg-emoji emoji-id=\"5963294565573072794\">🥊</tg-emoji>",
+    "Down bad, doubling down <tg-emoji emoji-id=\"5882216496536493419\">🕸️</tg-emoji>",
+    "Ahh shh, here we go again <tg-emoji emoji-id=\"5933800926367192635\">😓</tg-emoji>",
 ]
 
 
