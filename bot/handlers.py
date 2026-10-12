@@ -112,7 +112,7 @@ async def _tomochi_luck_lb(chat_id: int) -> str:
         else:
             movement_prefix = "     "
         lines.append(
-            f"     {n}. <b>{name}</b>\\n{movement_prefix}{rank_emoji} W:{int(row['wins'])} | P:{int(row['played'])} | Win rate: {float(row['win_rate']):g}%"
+            f"     {n}. <b>{name}</b>\n{movement_prefix}{rank_emoji} W:{int(row['wins'])} | P:{int(row['played'])} | Win rate: {float(row['win_rate']):g}%"
         )
     if not rows:
         lines.append("No games played yet.")
