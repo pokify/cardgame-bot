@@ -63,6 +63,7 @@ async def _effective_game_mode(chat_id: int) -> dict:
 
 
 _tomochi_luck_previous_ranks: dict[int, dict[int, int]] = {}
+_tomochi_luck_rank_snapshot_initialized: set[int] = set()
 
 
 async def _tomochi_luck_lb(chat_id: int) -> str:
@@ -90,6 +91,7 @@ async def _tomochi_luck_lb(chat_id: int) -> str:
         10: ("🎭", "5935885467269472061"),
     }
     last_rank = len(rows)
+    snapshot_initialized = chat_id in _tomochi_luck_rank_snapshot_initialized
     previous_ranks = _tomochi_luck_previous_ranks.get(chat_id, {})
     current_ranks = {int(row.get("user_id") or 0): n for n, row in enumerate(rows, 1)}
     for n, row in enumerate(rows, 1):
@@ -105,9 +107,13 @@ async def _tomochi_luck_lb(chat_id: int) -> str:
         rank_emoji = f'<tg-emoji emoji-id="{emoji_id}">{emoji_fallback}</tg-emoji>'
         old_rank = previous_ranks.get(user_id)
         new_player_emoji = '<tg-emoji emoji-id="5911212056974991641">🆕</tg-emoji>'
-        if old_rank is None:
-            # New players get the new-player marker, never a movement arrow.
+        if old_rank is None and snapshot_initialized:
+            # Mark players newly appearing since the last leaderboard snapshot.
             movement_prefix = f"{new_player_emoji} "
+        elif old_rank is None:
+            # First view after startup establishes a baseline; do not label
+            # all existing leaderboard members as new.
+            movement_prefix = "     "
         elif old_rank > n:
             # Arrows stay in their own left column; rank emoji remains at the
             # same horizontal start as the rank number above.
@@ -118,11 +124,12 @@ async def _tomochi_luck_lb(chat_id: int) -> str:
             # Reserve the arrow column when there is no movement.
             movement_prefix = "     "
         lines.append(
-            f"     {n}. <b>{name}</b>\\n{movement_prefix}{rank_emoji} W:{int(row['wins'])} | P:{int(row['played'])} | W rate: {float(row['win_rate']):g}%"
+            f"     {n}. <b>{name}</b>\n{movement_prefix}{rank_emoji} W:{int(row['wins'])} | P:{int(row['played'])} | W rate: {float(row['win_rate']):g}%"
         )
     if not rows:
         lines.append("No games played yet.")
     _tomochi_luck_previous_ranks[chat_id] = current_ranks
+    _tomochi_luck_rank_snapshot_initialized.add(chat_id)
     return "\n".join(lines)
 
 
