@@ -2253,32 +2253,25 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
             await q.answer("Joker settings unavailable. Try again in a moment.", show_alert=True)
             return
         _GAME_MODE_DRAFT[(gid, q.from_user.id)] = {"mode": "joker", "chance": cfg["chance"], "in_house": cfg["in_house"], "penalty": cfg["wins_penalty"]}
+        # Open the control panel as a fresh message. The menu may be an
+        # old/non-editable message, so relying on edit_message_text can make
+        # the Joker Config button appear to do nothing.
         await q.answer()
-        panel_text = _joker_config_text(cfg)
-        panel_markup = _joker_config_keyboard(gid, cfg)
         try:
-            await q.edit_message_text(panel_text, parse_mode="HTML", reply_markup=panel_markup)
+            await q.message.reply_text(
+                _joker_config_text(cfg),
+                parse_mode="HTML",
+                reply_markup=_joker_config_keyboard(gid, cfg),
+            )
         except Exception:
-            # If the menu message cannot be edited (for example, because it
-            # was sent with an incompatible message type), post the control
-            # panel as a new message instead of leaving the button unresponsive.
-            log.exception("Could not edit menu into Joker Config panel; sending a new panel")
+            log.exception("Could not send Joker Config panel")
             try:
-                await q.message.reply_text(
-                    panel_text, parse_mode="HTML", reply_markup=panel_markup
+                await context.bot.send_message(
+                    chat_id=q.message.chat_id,
+                    text="Could not open Joker Config. Please try again.",
                 )
             except Exception:
-                log.exception("Could not send Joker Config panel")
-                try:
-                    await context.bot.send_message(
-                        chat_id=q.message.chat_id,
-                        text="Could not open Joker Config. Please try again.",
-                        reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("Back", callback_data=_gm_cb(gid, "luck"))]
-                        ]),
-                    )
-                except Exception:
-                    log.exception("Could not send Joker Config fallback notice")
+                log.exception("Could not send Joker Config error notice")
         return
     if action.startswith("jokerdigit:"):
         digit = action.split(":", 1)[1]
