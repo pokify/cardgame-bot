@@ -1996,7 +1996,7 @@ def _joker_config_text(cfg: dict) -> str:
         f"Joker in vs House: {house}\n"
         f"Wins: {pen}\n\n"
         "Controls:\n"
-        "0–9 to set chance (0–100). < to delete.\n"
+        "0–9 to set chance (0–100). &lt; to delete.\n"
         "House NO/YES toggles joker in user vs house games.\n"
         "− / + adjusts wins taken off (−1 to −10)."
     )
