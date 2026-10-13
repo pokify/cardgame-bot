@@ -165,7 +165,7 @@ def render_deal(players: list[dict]) -> BytesIO:
     name_area_h = 120
     score_area_h = 150
 
-    cards: list[tuple[str, int, Image.Image]] = []
+    cards: list[tuple[str, int, Image.Image, str | None]] = []
     for p in players:
         raw = load_card(p["card_key"])
         im = _scale_card(raw)
@@ -181,10 +181,10 @@ def render_deal(players: list[dict]) -> BytesIO:
         bottom = p.get("bottom_text")
         cards.append((name, score, im, bottom))
 
-    card_h = max(im.height for _, _, im in cards)
+    card_h = max(im.height for _, _, im, _ in cards)
     total_w = (
         pad_x * 2
-        + sum(im.width for _, _, im in cards)
+        + sum(im.width for _, _, im, _ in cards)
         + gap * (len(cards) - 1)
     )
     total_h = pad_y * 2 + name_area_h + card_h + score_area_h
