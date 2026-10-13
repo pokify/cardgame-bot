@@ -1992,13 +1992,9 @@ def _joker_config_text(cfg: dict) -> str:
     pen = int(cfg.get("wins_penalty", -1))
     return (
         "<b>Set % chance that joker appears in a round.</b>\n\n"
-        f"Chance: {chance}% (0 means does not appear)\n"
+        f"Chance: {chance}% (0 = none)\n"
         f"Joker in vs House: {house}\n"
         f"Wins: {pen}\n\n"
-        "Controls:\n"
-        "0–9 to set chance (0–100). &lt; to delete.\n"
-        "House NO/YES toggles joker in user vs house games.\n"
-        "− / + adjusts wins taken off (−1 to −10)."
     )
 
 
