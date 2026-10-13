@@ -92,6 +92,8 @@ async def _tomochi_luck_lb(chat_id: int) -> str:
     }
     last_rank = len(rows)
     current_ranks = {int(row.get("user_id") or 0): n for n, row in enumerate(rows, 1)}
+    # First snapshot after this update: nobody has prev_rank yet, so don't mark everyone NEW.
+    baseline = not any(row.get("prev_rank") is not None for row in rows)
     for n, row in enumerate(rows, 1):
         user_id = int(row.get("user_id") or 0)
         raw_name = "House" if user_id == 0 else (row.get("username") or row.get("first_name") or user_id)
@@ -105,8 +107,12 @@ async def _tomochi_luck_lb(chat_id: int) -> str:
         rank_emoji = f'<tg-emoji emoji-id="{emoji_id}">{emoji_fallback}</tg-emoji>'
         old_rank = row.get("prev_rank")
         new_player_emoji = '<tg-emoji emoji-id="5911212056974991641">🆕</tg-emoji>'
-        if old_rank is None:
-            movement_prefix = f"{new_player_emoji} " if n <= 10 else "     "
+        if old_rank is None and not baseline:
+            # Truly new player since the last snapshot.
+            movement_prefix = f"{new_player_emoji} "
+        elif old_rank is None:
+            # Baseline snapshot — no arrow.
+            movement_prefix = "     "
         elif int(old_rank) > n:
             movement_prefix = "↑ "
         elif int(old_rank) < n:
