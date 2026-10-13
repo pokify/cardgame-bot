@@ -857,8 +857,10 @@ async def expire_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def _run_tomochi_luck(context, game_id: int, chat_id: int, players: list[dict]) -> None:
     from bot.config import CARDS
+    import random
     global _tomochi_house_emoji_index
-    if len(players) == 1:
+    is_house = len(players) == 1
+    if is_house:
         house_emoji_id = _TOMOCHI_HOUSE_EMOJI_IDS[
             _tomochi_house_emoji_index % len(_TOMOCHI_HOUSE_EMOJI_IDS)
         ]
@@ -875,38 +877,115 @@ async def _run_tomochi_luck(context, game_id: int, chat_id: int, players: list[d
     await context.bot.send_message(chat_id, started_text, parse_mode="HTML")
     await context.bot.send_message(chat_id, "Dealing...")
     await asyncio.sleep(5)
-    pool = [key for key in CARDS if key != "joker"]
-    keys = random.sample(pool, len(players) + (1 if len(players) == 1 else 0))
+
+    joker_cfg = await db.tomochi_luck_joker_settings(chat_id)
+    chance = joker_cfg["chance"]
+    allow_house_joker = joker_cfg["in_house"]
+    penalty = joker_cfg["wins_penalty"]  # negative number, e.g. -1
+
+    # Roll for joker inclusion (Tomochi Luck exclusive)
+    include_joker = (chance > 0) and (random.random() * 100 < chance)
+    if is_house and not allow_house_joker:
+        include_joker = False
+
+    # Banned cards only for 2-player sequences (including 1vHouse as consecutive 2-card deals)
+    banned = []
+    if is_house or len(players) == 2:
+        banned = await db.banned_cards(chat_id, "luck2")
+
+    base_pool = [k for k in CARDS if k != "joker" and k not in banned]
+    if len(base_pool) < (len(players) + (1 if is_house else 0)):
+        base_pool = [k for k in CARDS if k != "joker"]  # fallback if too many banned
+
+    n_cards = len(players) + (1 if is_house else 0)
+    if include_joker and len(base_pool) >= n_cards - 1:
+        # Force one joker into the deal, rest from normal cards, but never let joker be the unique highest
+        normal_needed = n_cards - 1
+        normal_keys = random.sample(base_pool, normal_needed)
+        keys = normal_keys + ["joker"]
+        random.shuffle(keys)
+    else:
+        keys = random.sample(base_pool, n_cards)
+
     assignments = []
-    for player, key in zip(players, keys):
-        assignments.append({"user_id": player["user_id"], "username": player.get("username"),
-            "first_name": player.get("first_name"), "card_key": key, "score": CARDS[key]["score"],
-            "display_score": CARDS[key]["score"], "label": CARDS[key]["label"]})
-    if len(players) == 1:
+    for i, player in enumerate(players):
+        key = keys[i]
+        face = CARDS[key]["score"]
+        assignments.append({
+            "user_id": player["user_id"],
+            "username": player.get("username"),
+            "first_name": player.get("first_name"),
+            "card_key": key,
+            "score": face,
+            "display_score": face,
+            "label": CARDS[key]["label"],
+        })
+    if is_house:
         key = keys[-1]
-        assignments.append({"user_id": -1, "username": None, "first_name": "House",
-            "card_key": key, "score": CARDS[key]["score"], "display_score": CARDS[key]["score"],
-            "label": CARDS[key]["label"]})
-    winner = max(assignments, key=lambda a: int(a["score"]))
+        face = CARDS[key]["score"]
+        assignments.append({
+            "user_id": -1,
+            "username": None,
+            "first_name": "House",
+            "card_key": key,
+            "score": face,
+            "display_score": face,
+            "label": CARDS[key]["label"],
+        })
+
+    # Winner is always the highest non-joker card (joker can never win the hand)
+    contenders = [a for a in assignments if a["card_key"] != "joker"]
+    if not contenders:
+        contenders = assignments  # safety
+    winner = max(contenders, key=lambda a: int(a["score"]))
+
+    # Record memory for 2-card deals so ban works across user-vs-user 2p and user-vs-house
+    if is_house or len(players) == 2:
+        await db.record_deal_memory(chat_id, "luck2", [a["card_key"] for a in assignments])
+
     await context.bot.send_photo(chat_id, photo=InputFile(render_deal(assignments), filename="deal.png"))
     await db.save_deal(game_id, assignments, winner["user_id"])
-    # Store House as user_id 0 so its win is recorded in the Tomochi Luck leaderboard.
+
     winner_id = 0 if int(winner["user_id"]) == -1 else int(winner["user_id"])
-    await db.tomochi_luck_record_game(chat_id, players, winner_id)
+
+    # Apply joker penalty to whoever drew it (can be player or House)
+    joker_holder = next((a for a in assignments if a["card_key"] == "joker"), None)
+    penalties = {}
+    if joker_holder is not None:
+        hid = 0 if int(joker_holder["user_id"]) == -1 else int(joker_holder["user_id"])
+        penalties[hid] = penalty
+
+    await db.tomochi_luck_record_game(chat_id, players, winner_id, penalties)
     await db.set_tomochi_luck_leaderboard_visible(chat_id, True)
+
+    # Outcome messages
+    joker_line = ""
+    if joker_holder is not None:
+        if int(joker_holder["user_id"]) == -1:
+            joker_tag = "House"
+        else:
+            joker_tag = mention(joker_holder.get("username"), joker_holder.get("first_name"), joker_holder.get("user_id"))
+        joker_line = f"\n\n{joker_tag}, Joker pulled: {penalty} Win"
+
     if winner_id == 0:
         player = players[0] if players else {}
         player_tag = mention(player.get("username"), player.get("first_name"), player.get("user_id", 0))
-        await context.bot.send_message(chat_id,
-            f"Highest card: House\n\n{player_tag} You lose!\nNever bet against the House! Better luck next time! <tg-emoji emoji-id='5936040004487749083'>🧛‍♂️</tg-emoji>",
-            parse_mode="HTML", reply_markup=_blank_outcome_markup())
-    elif winner_id is None:
-        await context.bot.send_message(chat_id, "Highest card: House\n\nNever bet against the House! Better luck next time! 😙", parse_mode="HTML", reply_markup=_blank_outcome_markup())
+        if joker_holder is not None:
+            msg = f"Highest card: House\n\n{player_tag}, Joker pulled: {penalty} Win"
+        else:
+            msg = f"Highest card: House\n\n{player_tag} You lose!\nNever bet against the House! Better luck next time! <tg-emoji emoji-id='5936040004487749083'>🧛‍♂️</tg-emoji>"
     else:
         stats = next((r for r in await db.tomochi_luck_leaderboard(chat_id, 10000)
                       if int(r["user_id"]) == int(winner_id)), None)
-        await context.bot.send_message(chat_id,
-            f"Highest card: {mention(winner.get('username'), winner.get('first_name'), winner.get('user_id'))}\nWins: {int(stats['wins']) if stats else 0}\nWin rate: {float(stats['win_rate']) if stats else 0:g}%", parse_mode="HTML", reply_markup=_blank_outcome_markup())
+        wins = int(stats["wins"]) if stats else 0
+        rate = float(stats["win_rate"]) if stats else 0.0
+        msg = (
+            f"Highest card: {mention(winner.get('username'), winner.get('first_name'), winner.get('user_id'))}\n"
+            f"Wins: {wins}\n"
+            f"Win rate: {rate:g}%{joker_line}"
+        )
+    await context.bot.send_message(chat_id, msg, parse_mode="HTML", reply_markup=_blank_outcome_markup())
+
     await asyncio.sleep(5)
     await context.bot.send_message(chat_id, await _tomochi_luck_lb(chat_id), parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Play", callback_data="playcards")]]))
@@ -1906,6 +1985,47 @@ async def game_bump_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     await _schedule_game_bump(context, chat_id)
 
 
+
+def _joker_config_text(cfg: dict) -> str:
+    chance = int(cfg.get("chance", 8))
+    house = "Yes" if cfg.get("in_house", True) else "No"
+    pen = int(cfg.get("wins_penalty", -1))
+    return (
+        "<b>Set % chance that joker appears in a round.</b>\n\n"
+        f"Chance: {chance}% (0 means does not appear)\n"
+        f"Joker in vs House: {house}\n"
+        f"Wins: {pen}\n\n"
+        "Controls:\n"
+        "0–9 to set chance (0–100). < to delete.\n"
+        "House NO/YES toggles joker in user vs house games.\n"
+        "− / + adjusts wins taken off (−1 to −10)."
+    )
+
+
+def _joker_config_keyboard(gid: int, cfg: dict):
+    chance = int(cfg.get("chance", 8))
+    house_yes = bool(cfg.get("in_house", True))
+    pen = int(cfg.get("wins_penalty", -1))
+    digits = []
+    for row in (["1","2","3"], ["4","5","6"], ["7","8","9"], ["0", "del"]):
+        digits.append([
+            InlineKeyboardButton("<" if d == "del" else d, callback_data=_gm_cb(gid, f"jokerdigit:{d}"))
+            for d in row
+        ])
+    return InlineKeyboardMarkup(
+        digits + [
+            [InlineKeyboardButton("House NO" if house_yes else "House YES", callback_data=_gm_cb(gid, "jokerhouse"))],
+            [
+                InlineKeyboardButton("−", callback_data=_gm_cb(gid, "jokerpenalty-")),
+                InlineKeyboardButton(f"Wins {pen}", callback_data="pc:noop"),
+                InlineKeyboardButton("+", callback_data=_gm_cb(gid, "jokerpenalty+")),
+            ],
+            [InlineKeyboardButton("Save", callback_data=_gm_cb(gid, "jokersave"))],
+            [InlineKeyboardButton("Back", callback_data=_gm_cb(gid, "luck"))],
+        ]
+    )
+
+
 async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
     q=update.callback_query; p=q.data.split(":",2)
     if len(p)<3: await q.answer(); return
@@ -1928,7 +2048,6 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
         await q.answer(message, show_alert=True)
         return
     if action in ("pointsinfo", "houseinfo"):
-        seen_info.discard(info_key)
         await q.answer()
         if action == "pointsinfo":
             draft = await db.get_pvp_settings(gid)
@@ -1990,6 +2109,7 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
                 [InlineKeyboardButton("Disable House" if enabled else "Enable House", callback_data=_gm_cb(gid,"lucktoggle"))],
                 [InlineKeyboardButton("Clear Luck Leaderboard", callback_data=_gm_cb(gid,"luckclear"))],
                 [InlineKeyboardButton("House on lb ON" if await db.tomochi_luck_house_on_lb(gid) else "House on lb OFF", callback_data=_gm_cb(gid,"lucklb_toggle"))],
+                [InlineKeyboardButton("Joker Config", callback_data=_gm_cb(gid,"jokerconfig"))],
                 [InlineKeyboardButton("Back", callback_data=_gm_cb(gid,"menu"))]]))
         return
     if action == "lucktoggle":
@@ -2001,6 +2121,7 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
                 [InlineKeyboardButton("Disable House" if not enabled else "Enable House", callback_data=_gm_cb(gid,"lucktoggle"))],
                 [InlineKeyboardButton("Clear Luck Leaderboard", callback_data=_gm_cb(gid,"luckclear"))],
                 [InlineKeyboardButton("House on lb ON" if await db.tomochi_luck_house_on_lb(gid) else "House on lb OFF", callback_data=_gm_cb(gid,"lucklb_toggle"))],
+                [InlineKeyboardButton("Joker Config", callback_data=_gm_cb(gid,"jokerconfig"))],
                 [InlineKeyboardButton("Back", callback_data=_gm_cb(gid,"menu"))]]))
         return
     if action == "lucklb_toggle":
@@ -2013,6 +2134,7 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
                 [InlineKeyboardButton("Disable House" if await db.tomochi_luck_house_enabled(gid) else "Enable House", callback_data=_gm_cb(gid,"lucktoggle"))],
                 [InlineKeyboardButton("Clear Luck Leaderboard", callback_data=_gm_cb(gid,"luckclear"))],
                 [InlineKeyboardButton("House on lb ON" if enabled_now else "House on lb OFF", callback_data=_gm_cb(gid,"lucklb_toggle"))],
+                [InlineKeyboardButton("Joker Config", callback_data=_gm_cb(gid,"jokerconfig"))],
                 [InlineKeyboardButton("Back", callback_data=_gm_cb(gid,"menu"))]]))
         return
     if action == "luckclear":
@@ -2091,6 +2213,51 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
     if action.startswith("clearhistory:"):
         which=action.split(":",1)[1]; await db.clear_game_mode_history(gid,which)
         await q.answer("History cleared."); await q.edit_message_text("History cleared.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back",callback_data=_gm_cb(gid,"menu"))]])); return
+
+    if action == "jokerconfig":
+        cfg = await db.tomochi_luck_joker_settings(gid)
+        _GAME_MODE_DRAFT[(gid, q.from_user.id)] = {"mode": "joker", "chance": cfg["chance"], "in_house": cfg["in_house"], "penalty": cfg["wins_penalty"]}
+        await q.answer()
+        await q.edit_message_text(_joker_config_text(cfg), parse_mode="HTML", reply_markup=_joker_config_keyboard(gid, cfg))
+        return
+    if action.startswith("jokerdigit:"):
+        digit = action.split(":", 1)[1]
+        draft = _GAME_MODE_DRAFT.setdefault((gid, q.from_user.id), {"mode": "joker", "chance": 8})
+        chance = int(draft.get("chance", 8))
+        if digit == "del":
+            chance = chance // 10
+        else:
+            chance = min(100, chance * 10 + int(digit))
+        draft["chance"] = chance
+        cfg = {"chance": chance, "in_house": draft.get("in_house", True), "wins_penalty": draft.get("penalty", -1)}
+        await q.answer()
+        await q.edit_message_text(_joker_config_text(cfg), parse_mode="HTML", reply_markup=_joker_config_keyboard(gid, cfg))
+        return
+    if action == "jokerhouse":
+        draft = _GAME_MODE_DRAFT.setdefault((gid, q.from_user.id), {"mode": "joker", "chance": 8, "in_house": True, "penalty": -1})
+        draft["in_house"] = not draft.get("in_house", True)
+        cfg = {"chance": draft.get("chance", 8), "in_house": draft["in_house"], "wins_penalty": draft.get("penalty", -1)}
+        await q.answer()
+        await q.edit_message_text(_joker_config_text(cfg), parse_mode="HTML", reply_markup=_joker_config_keyboard(gid, cfg))
+        return
+    if action in ("jokerpenalty+", "jokerpenalty-"):
+        draft = _GAME_MODE_DRAFT.setdefault((gid, q.from_user.id), {"mode": "joker", "chance": 8, "penalty": -1})
+        pen = int(draft.get("penalty", -1))
+        pen = max(-10, min(-1, pen + (1 if action.endswith("+") else -1)))
+        draft["penalty"] = pen
+        cfg = {"chance": draft.get("chance", 8), "in_house": draft.get("in_house", True), "wins_penalty": pen}
+        await q.answer()
+        await q.edit_message_text(_joker_config_text(cfg), parse_mode="HTML", reply_markup=_joker_config_keyboard(gid, cfg))
+        return
+    if action == "jokersave":
+        draft = _GAME_MODE_DRAFT.get((gid, q.from_user.id), {})
+        await db.set_tomochi_luck_joker_chance(gid, int(draft.get("chance", 8)))
+        await db.set_tomochi_luck_joker_in_house(gid, bool(draft.get("in_house", True)))
+        await db.set_tomochi_luck_joker_wins_penalty(gid, int(draft.get("penalty", -1)))
+        await q.answer("Saved.")
+        await q.edit_message_text("Joker config saved.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=_gm_cb(gid, "luck"))]]))
+        return
+
     await q.answer("Not available.",show_alert=True)
 
 
