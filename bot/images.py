@@ -178,7 +178,8 @@ def render_deal(players: list[dict]) -> BytesIO:
         else:
             score = p.get("score", CARDS[p["card_key"]]["score"])
 
-        cards.append((name, score, im))
+        bottom = p.get("bottom_text")
+        cards.append((name, score, im, bottom))
 
     card_h = max(im.height for _, _, im in cards)
     total_w = (
@@ -192,7 +193,7 @@ def render_deal(players: list[dict]) -> BytesIO:
     draw = ImageDraw.Draw(canvas)
 
     x = pad_x
-    for name, score, im in cards:
+    for name, score, im, bottom in cards:
         # Keep the preferred username size. If it is too wide, truncate by
         # rendered pixel width and append ASCII dots instead of
         # shrinking the username to an unreadable size.
@@ -222,42 +223,62 @@ def render_deal(players: list[dict]) -> BytesIO:
         else:
             canvas.paste(im, (x, y_card))
 
-        # The score gets its own large line below "Score:". This avoids
-        # shrinking a 70-90px font just to fit "Score: 11" into 209px.
-        score_label = "Score:"
-        score_value = str(score)
-        score_label_font = _font(40)
-        score_value_font, score_w = _fit_font(
-            draw,
-            score_value,
-            max_width=max(1, im.width - 12),
-            start_size=SCORE_FONT_SIZE,
-            min_size=SCORE_MIN_FONT_SIZE,
-        )
+        # Tomochi Luck joker can supply a full bottom_text (e.g. "-1 Win")
+        # that replaces the normal "Score:" + value pair.
+        if bottom:
+            bottom_font, bottom_w = _fit_font(
+                draw,
+                bottom,
+                max_width=max(1, im.width - 12),
+                start_size=SCORE_FONT_SIZE,
+                min_size=SCORE_MIN_FONT_SIZE,
+            )
+            bottom_bbox = draw.textbbox((0, 0), bottom, font=bottom_font)
+            bottom_h = bottom_bbox[3] - bottom_bbox[1]
+            bottom_top = y_card + im.height + max(0, (score_area_h - bottom_h) // 2)
+            draw.text(
+                (x + (im.width - bottom_w) / 2, bottom_top - bottom_bbox[1]),
+                bottom,
+                fill=(20, 20, 20),
+                font=bottom_font,
+            )
+        else:
+            # The score gets its own large line below "Score:". This avoids
+            # shrinking a 70-90px font just to fit "Score: 11" into 209px.
+            score_label = "Score:"
+            score_value = str(score)
+            score_label_font = _font(40)
+            score_value_font, score_w = _fit_font(
+                draw,
+                score_value,
+                max_width=max(1, im.width - 12),
+                start_size=SCORE_FONT_SIZE,
+                min_size=SCORE_MIN_FONT_SIZE,
+            )
 
-        score_label_bbox = draw.textbbox((0, 0), score_label, font=score_label_font)
-        score_value_bbox = draw.textbbox((0, 0), score_value, font=score_value_font)
-        label_h = score_label_bbox[3] - score_label_bbox[1]
-        value_h = score_value_bbox[3] - score_value_bbox[1]
-        spacing = 10
-        block_h = label_h + spacing + value_h
-        score_top = y_card + im.height + max(0, (score_area_h - block_h) // 2)
+            score_label_bbox = draw.textbbox((0, 0), score_label, font=score_label_font)
+            score_value_bbox = draw.textbbox((0, 0), score_value, font=score_value_font)
+            label_h = score_label_bbox[3] - score_label_bbox[1]
+            value_h = score_value_bbox[3] - score_value_bbox[1]
+            spacing = 10
+            block_h = label_h + spacing + value_h
+            score_top = y_card + im.height + max(0, (score_area_h - block_h) // 2)
 
-        label_w = draw.textlength(score_label, font=score_label_font)
-        draw.text(
-            (x + (im.width - label_w) / 2, score_top - score_label_bbox[1]),
-            score_label,
-            fill=(20, 20, 20),
-            font=score_label_font,
-        )
+            label_w = draw.textlength(score_label, font=score_label_font)
+            draw.text(
+                (x + (im.width - label_w) / 2, score_top - score_label_bbox[1]),
+                score_label,
+                fill=(20, 20, 20),
+                font=score_label_font,
+            )
 
-        value_y = score_top + label_h + spacing - score_value_bbox[1]
-        draw.text(
-            (x + (im.width - score_w) / 2, value_y),
-            score_value,
-            fill=(20, 20, 20),
-            font=score_value_font,
-        )
+            value_y = score_top + label_h + spacing - score_value_bbox[1]
+            draw.text(
+                (x + (im.width - score_w) / 2, value_y),
+                score_value,
+                fill=(20, 20, 20),
+                font=score_value_font,
+            )
 
         x += im.width + gap
 

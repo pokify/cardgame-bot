@@ -940,6 +940,10 @@ async def _run_tomochi_luck(context, game_id: int, chat_id: int, players: list[d
     if is_house or len(players) == 2:
         await db.record_deal_memory(chat_id, "luck2", [a["card_key"] for a in assignments])
 
+    # For Tomochi Luck joker, replace the bottom "Score: -5" with the win penalty text.
+    for a in assignments:
+        if a.get("card_key") == "joker":
+            a["bottom_text"] = f"{penalty} Win"
     await context.bot.send_photo(chat_id, photo=InputFile(render_deal(assignments), filename="deal.png"))
     await db.save_deal(game_id, assignments, winner["user_id"])
 
@@ -962,13 +966,13 @@ async def _run_tomochi_luck(context, game_id: int, chat_id: int, players: list[d
             joker_tag = "House"
         else:
             joker_tag = mention(joker_holder.get("username"), joker_holder.get("first_name"), joker_holder.get("user_id"))
-        joker_line = f"\n\n{joker_tag}, Joker pulled: {penalty} Win"
+        joker_line = f"\n\nNyaaaaaah <tg-emoji emoji-id=\"5936079376452951179\">🤪</tg-emoji>\n{joker_tag}, Joker pulled: {penalty} Win"
 
     if winner_id == 0:
         player = players[0] if players else {}
         player_tag = mention(player.get("username"), player.get("first_name"), player.get("user_id", 0))
         if joker_holder is not None:
-            msg = f"Highest card: House\n\n{player_tag}, Joker pulled: {penalty} Win"
+            msg = f"Highest card: House\n\nNyaaaaaah <tg-emoji emoji-id=\"5936079376452951179\">🤪</tg-emoji>\n{player_tag}, Joker pulled: {penalty} Win"
         else:
             msg = f"Highest card: House\n\n{player_tag} You lose!\nNever bet against the House! Better luck next time! <tg-emoji emoji-id='5936040004487749083'>🧛‍♂️</tg-emoji>"
     else:
