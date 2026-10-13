@@ -2254,11 +2254,31 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
             return
         _GAME_MODE_DRAFT[(gid, q.from_user.id)] = {"mode": "joker", "chance": cfg["chance"], "in_house": cfg["in_house"], "penalty": cfg["wins_penalty"]}
         await q.answer()
+        panel_text = _joker_config_text(cfg)
+        panel_markup = _joker_config_keyboard(gid, cfg)
         try:
-            await q.edit_message_text(_joker_config_text(cfg), parse_mode="HTML", reply_markup=_joker_config_keyboard(gid, cfg))
+            await q.edit_message_text(panel_text, parse_mode="HTML", reply_markup=panel_markup)
         except Exception:
-            log.exception("Could not open Joker Config panel")
-            await q.answer("Could not open Joker Config.", show_alert=True)
+            # If the menu message cannot be edited (for example, because it
+            # was sent with an incompatible message type), post the control
+            # panel as a new message instead of leaving the button unresponsive.
+            log.exception("Could not edit menu into Joker Config panel; sending a new panel")
+            try:
+                await q.message.reply_text(
+                    panel_text, parse_mode="HTML", reply_markup=panel_markup
+                )
+            except Exception:
+                log.exception("Could not send Joker Config panel")
+                try:
+                    await context.bot.send_message(
+                        chat_id=q.message.chat_id,
+                        text="Could not open Joker Config. Please try again.",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("Back", callback_data=_gm_cb(gid, "luck"))]
+                        ]),
+                    )
+                except Exception:
+                    log.exception("Could not send Joker Config fallback notice")
         return
     if action.startswith("jokerdigit:"):
         digit = action.split(":", 1)[1]
