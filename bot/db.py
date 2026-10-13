@@ -169,9 +169,11 @@ async def init_schema() -> None:
                 chat_id BIGINT NOT NULL, user_id BIGINT NOT NULL,
                 username TEXT, first_name TEXT,
                 wins INTEGER NOT NULL DEFAULT 0, played INTEGER NOT NULL DEFAULT 0,
+                prev_rank INTEGER,
                 PRIMARY KEY(chat_id,user_id)
             )
         """)
+        await conn.execute("ALTER TABLE tomochi_luck_stats ADD COLUMN IF NOT EXISTS prev_rank INTEGER")
         # Track participation once per Game Mode tournament, not once per /cards hand.
         await conn.execute(
             "ALTER TABLE game_mode_history ADD COLUMN IF NOT EXISTS last_event_started_at TIMESTAMPTZ"
@@ -1106,6 +1108,16 @@ async def tomochi_luck_record_game(chat_id: int, players: list[dict], winner_use
 async def tomochi_luck_leaderboard(chat_id: int, limit: int = 15) -> list:
     return await pool().fetch("""SELECT *, CASE WHEN played>0 THEN ROUND(wins::numeric*100/played,1) ELSE 0 END AS win_rate
         FROM tomochi_luck_stats WHERE chat_id=$1 ORDER BY wins DESC,played DESC,user_id ASC LIMIT $2""", chat_id, limit)
+
+async def set_tomochi_luck_prev_ranks(chat_id: int, ranks: dict[int, int]) -> None:
+    """Persist previous ranks so movement arrows survive restarts."""
+    if not ranks:
+        return
+    async with pool().acquire() as conn:
+        await conn.executemany(
+            "UPDATE tomochi_luck_stats SET prev_rank=$3 WHERE chat_id=$1 AND user_id=$2",
+            [(chat_id, uid, rank) for uid, rank in ranks.items()],
+        )
 
 async def clear_tomochi_luck(chat_id: int) -> None:
     await pool().execute("DELETE FROM tomochi_luck_stats WHERE chat_id=$1", chat_id)

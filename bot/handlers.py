@@ -91,13 +91,11 @@ async def _tomochi_luck_lb(chat_id: int) -> str:
         10: ("🎭", "5935885467269472061"),
     }
     last_rank = len(rows)
-    snapshot_initialized = chat_id in _tomochi_luck_rank_snapshot_initialized
-    previous_ranks = _tomochi_luck_previous_ranks.get(chat_id, {})
     current_ranks = {int(row.get("user_id") or 0): n for n, row in enumerate(rows, 1)}
     for n, row in enumerate(rows, 1):
         user_id = int(row.get("user_id") or 0)
         raw_name = "House" if user_id == 0 else (row.get("username") or row.get("first_name") or user_id)
-        name = str(raw_name).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").lstrip("@")
+        name = str(raw_name).replace("&", "&").replace("<", "<").replace(">", ">").lstrip("@")
         if user_id == 0:
             emoji_fallback, emoji_id = ("🧛‍♂️", "5936040004487749083")
         elif n >= 10 or (n == last_rank and n != 1):
@@ -105,32 +103,25 @@ async def _tomochi_luck_lb(chat_id: int) -> str:
         else:
             emoji_fallback, emoji_id = luck_rank_emojis.get(n, luck_rank_emojis[10])
         rank_emoji = f'<tg-emoji emoji-id="{emoji_id}">{emoji_fallback}</tg-emoji>'
-        old_rank = previous_ranks.get(user_id)
+        old_rank = row.get("prev_rank")
         new_player_emoji = '<tg-emoji emoji-id="5911212056974991641">🆕</tg-emoji>'
-        if old_rank is None and snapshot_initialized:
-            # Mark players newly appearing since the last leaderboard snapshot.
-            movement_prefix = f"{new_player_emoji} "
-        elif old_rank is None:
-            # First view after startup establishes a baseline; do not label
-            # all existing leaderboard members as new.
-            movement_prefix = "     "
-        elif old_rank > n:
-            # Arrows stay in their own left column; rank emoji remains at the
-            # same horizontal start as the rank number above.
+        if old_rank is None:
+            movement_prefix = f"{new_player_emoji} " if n <= 10 else "     "
+        elif int(old_rank) > n:
             movement_prefix = "↑ "
-        elif old_rank < n:
+        elif int(old_rank) < n:
             movement_prefix = "↓ "
         else:
-            # Reserve the arrow column when there is no movement.
             movement_prefix = "     "
         lines.append(
             f"     {n}. <b>{name}</b>\n{movement_prefix}{rank_emoji} W:{int(row['wins'])} | P:{int(row['played'])} | W rate: {float(row['win_rate']):g}%"
         )
     if not rows:
         lines.append("No games played yet.")
-    _tomochi_luck_previous_ranks[chat_id] = current_ranks
-    _tomochi_luck_rank_snapshot_initialized.add(chat_id)
+    # Persist current ranks so arrows survive bot restarts.
+    await db.set_tomochi_luck_prev_ranks(chat_id, current_ranks)
     return "\n".join(lines)
+
 
 
 def _plain_player_name(player) -> str:
