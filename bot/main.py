@@ -7,6 +7,7 @@ from telegram import BotCommand, BotCommandScopeAllGroupChats, BotCommandScopeAl
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
+    ChatMemberHandler,
     CommandHandler,
     MessageHandler,
     filters,
@@ -36,6 +37,7 @@ from bot.handlers import (
     restore_jobs,
     showlb_cb,
     start_cmd,
+    bot_added_to_group,
 )
 
 logging.basicConfig(
@@ -106,6 +108,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(playcards_cb, pattern=r"^playcards(?::mode:(?:first|highest))?$"))
     app.add_handler(CallbackQueryHandler(points_cb, pattern=r"^points:\d+$"))
     app.add_handler(CallbackQueryHandler(gamemode_cb, pattern=r"^gm:-?\d+:"))
+    app.add_handler(ChatMemberHandler(bot_added_to_group, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(CallbackQueryHandler(resetlb_cb, pattern=r"^resetlb:(yes|no)$"))
     app.add_handler(CallbackQueryHandler(houseconfig_cb, pattern=r"^hc:(toggle|plus|minus|nolimit|unlockplus|unlockminus|save|noop)$"))
     app.add_handler(CallbackQueryHandler(pvpconfig_cb, pattern=r"^pc:"))
@@ -117,7 +120,7 @@ def main() -> None:
         group=1,
     )
     log.info("Polling...")
-    app.run_polling(allowed_updates=["message", "callback_query"])
+    app.run_polling(allowed_updates=["message", "callback_query", "my_chat_member"])
 
 
 if __name__ == "__main__":

@@ -2026,6 +2026,37 @@ def _joker_config_keyboard(gid: int, cfg: dict):
     )
 
 
+
+async def bot_added_to_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Post a welcome message when the bot is added to a group."""
+    member = update.my_chat_member
+    if not member:
+        return
+    old = member.old_chat_member.status
+    new = member.new_chat_member.status
+    # Only fire when the bot itself is newly added (not already present)
+    if old in ("member", "administrator", "creator") or new not in ("member", "administrator"):
+        return
+    chat = member.chat
+    if chat.type not in ("group", "supergroup"):
+        return
+    text = (
+        "Tomochi cards!\n\n"
+        "Game of chance activated.\n\n"
+        "Current game mode: <b>Tomochi Luck</b>\n\n"
+        "No points just luck.\n\n"
+        'Try your luck. <tg-emoji emoji-id="5933961609683673255">😏</tg-emoji>\n\n'
+        "Use /cards or click play to start!"
+    )
+    await context.bot.send_message(
+        chat.id,
+        text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Play", callback_data="playcards")]]),
+        disable_web_page_preview=True,
+    )
+
+
 async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
     q=update.callback_query; p=q.data.split(":",2)
     if len(p)<3: await q.answer(); return
@@ -2215,10 +2246,19 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
         await q.answer("History cleared."); await q.edit_message_text("History cleared.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back",callback_data=_gm_cb(gid,"menu"))]])); return
 
     if action == "jokerconfig":
-        cfg = await db.tomochi_luck_joker_settings(gid)
+        try:
+            cfg = await db.tomochi_luck_joker_settings(gid)
+        except Exception:
+            log.exception("Could not load Tomochi Luck joker settings")
+            await q.answer("Joker settings unavailable. Try again in a moment.", show_alert=True)
+            return
         _GAME_MODE_DRAFT[(gid, q.from_user.id)] = {"mode": "joker", "chance": cfg["chance"], "in_house": cfg["in_house"], "penalty": cfg["wins_penalty"]}
         await q.answer()
-        await q.edit_message_text(_joker_config_text(cfg), parse_mode="HTML", reply_markup=_joker_config_keyboard(gid, cfg))
+        try:
+            await q.edit_message_text(_joker_config_text(cfg), parse_mode="HTML", reply_markup=_joker_config_keyboard(gid, cfg))
+        except Exception:
+            log.exception("Could not open Joker Config panel")
+            await q.answer("Could not open Joker Config.", show_alert=True)
         return
     if action.startswith("jokerdigit:"):
         digit = action.split(":", 1)[1]
