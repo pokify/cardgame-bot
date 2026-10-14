@@ -1807,6 +1807,19 @@ async def bump_lobby_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         players = await db.list_players(game_id)
         old_id = game["message_id"]
 
+        # Determine luck mode safely so a failure here cannot abort the bump.
+        luck_mode = False
+        try:
+            luck_mode = (await _effective_game_mode(chat_id)).get("mode") == "luck"
+        except Exception:
+            log.exception("Could not determine game mode for lobby bump; defaulting to non-luck")
+
+        house_available = False
+        try:
+            house_available = (await db.house_enabled(chat_id)) and len(players) <= 1
+        except Exception:
+            log.exception("Could not load house availability for lobby bump")
+
         try:
             msg = await context.bot.send_message(
                 chat_id,
@@ -1814,13 +1827,13 @@ async def bump_lobby_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 parse_mode="HTML",
                 reply_markup=lobby_keyboard(
                     game_id,
-                    house_available=(await db.house_enabled(chat_id)) and len(players) <= 1,
-                    luck_mode=(await _effective_game_mode(chat_id)).get("mode") == "luck",
+                    house_available=house_available,
+                    luck_mode=luck_mode,
                 ),
                 disable_web_page_preview=True,
             )
         except Exception:
-            log.exception("Lobby bump failed")
+            log.exception("Lobby bump failed for chat %s game %s", chat_id, game_id)
             return
 
         await db.set_message_id(game_id, msg.message_id)
