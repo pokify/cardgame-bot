@@ -966,13 +966,13 @@ async def _run_tomochi_luck(context, game_id: int, chat_id: int, players: list[d
             joker_tag = "House"
         else:
             joker_tag = mention(joker_holder.get("username"), joker_holder.get("first_name"), joker_holder.get("user_id"))
-        joker_line = f"\n\nNyaaaaaah <tg-emoji emoji-id=\"5936079376452951179\">🤪</tg-emoji>\n{joker_tag}, Joker pulled: {penalty} Win"
+        joker_line = f"\n\nNyaaaaaah-<tg-emoji emoji-id=\"5936079376452951179\">🤪</tg-emoji>\n{joker_tag}, Joker pulled: {penalty} Win"
 
     if winner_id == 0:
         player = players[0] if players else {}
         player_tag = mention(player.get("username"), player.get("first_name"), player.get("user_id", 0))
         if joker_holder is not None:
-            msg = f"Highest card: House\n\nNyaaaaaah <tg-emoji emoji-id=\"5936079376452951179\">🤪</tg-emoji>\n{player_tag}, Joker pulled: {penalty} Win"
+            msg = f"Highest card: House\n\nNyaaaaaah-<tg-emoji emoji-id=\"5936079376452951179\">🤪</tg-emoji>\n{player_tag}, Joker pulled: {penalty} Win"
         else:
             msg = f"Highest card: House\n\n{player_tag} You lose!\nNever bet against the House! Better luck next time! <tg-emoji emoji-id='5936040004487749083'>🧛‍♂️</tg-emoji>"
     else:
