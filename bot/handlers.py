@@ -2024,8 +2024,35 @@ def _joker_config_keyboard(gid: int, cfg: dict):
 
 
 
+
+def _load_allowed_chats() -> set[int]:
+    """Load allowed group chat IDs from allowed_chats.txt next to the project root.
+    Empty file (or only comments) means everyone is allowed.
+    """
+    candidates = [
+        Path(__file__).resolve().parent.parent / "allowed_chats.txt",
+        Path.cwd() / "allowed_chats.txt",
+    ]
+    path = next((p for p in candidates if p.exists()), None)
+    if path is None:
+        return set()
+    allowed: set[int] = set()
+    try:
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                allowed.add(int(line))
+            except ValueError:
+                continue
+    except Exception:
+        log.exception("Could not read allowed_chats.txt")
+    return allowed
+
+
 async def bot_added_to_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Post a welcome message when the bot is added to a group."""
+    """Post a welcome message when the bot is added to a group, or leave if not whitelisted."""
     member = update.my_chat_member
     if not member:
         return
@@ -2037,6 +2064,24 @@ async def bot_added_to_group(update: Update, context: ContextTypes.DEFAULT_TYPE)
     chat = member.chat
     if chat.type not in ("group", "supergroup"):
         return
+
+    allowed = _load_allowed_chats()
+    # Empty whitelist = everyone allowed. Non-empty = only listed groups.
+    if allowed and chat.id not in allowed:
+        try:
+            await context.bot.send_message(
+                chat.id,
+                'Private Tomochi® bot sir <tg-emoji emoji-id="5962823192912336897">🦸‍♂️</tg-emoji>',
+                parse_mode="HTML",
+            )
+        except Exception:
+            log.exception("Could not send private-bot message to %s", chat.id)
+        try:
+            await context.bot.leave_chat(chat.id)
+        except Exception:
+            log.exception("Could not leave chat %s", chat.id)
+        return
+
     text = (
         "Tomochi cards!\n\n"
         "Game of chance activated.\n\n"
