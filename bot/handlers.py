@@ -1815,6 +1815,7 @@ async def bump_lobby_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 reply_markup=lobby_keyboard(
                     game_id,
                     house_available=(await db.house_enabled(chat_id)) and len(players) <= 1,
+                    luck_mode=(await _effective_game_mode(chat_id)).get("mode") == "luck",
                 ),
                 disable_web_page_preview=True,
             )
