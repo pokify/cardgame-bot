@@ -69,7 +69,8 @@ _tomochi_luck_rank_snapshot_initialized: set[int] = set()
 async def _tomochi_luck_lb(chat_id: int) -> str:
     if not await db.tomochi_luck_leaderboard_visible(chat_id):
         return "<b>Tomochi Luck leaderboard will return after the next completed Tomochi Luck game.</b>"
-    rows = await db.tomochi_luck_leaderboard(chat_id, 10000)
+    rank_limit = await db.get_leaderboard_rank_limit(chat_id)
+    rows = await db.tomochi_luck_leaderboard(chat_id, rank_limit if rank_limit > 0 else 10000)
     if not await db.tomochi_luck_house_on_lb(chat_id):
         rows = [row for row in rows if str(row.get("username") or "").lower() != "house" and int(row.get("user_id") or 0) != 0]
     lines = [
@@ -1378,7 +1379,8 @@ def _gm_menu_keyboard(group_id:int,mode):
           [InlineKeyboardButton("Tomochi Luck",callback_data=_gm_cb(group_id,"luck"))],
           [InlineKeyboardButton("Game Bump Alert",callback_data=_gm_cb(group_id,"bump"))],
           [InlineKeyboardButton("Points Settings",callback_data=_gm_cb(group_id,"pointsinfo"))],
-          [InlineKeyboardButton("House Settings",callback_data=_gm_cb(group_id,"houseinfo"))]]
+          [InlineKeyboardButton("House Settings",callback_data=_gm_cb(group_id,"houseinfo"))],
+          [InlineKeyboardButton("lb rank limit",callback_data=_gm_cb(group_id,"lblimit"))]]
     return InlineKeyboardMarkup(rows)
 
 
@@ -1642,7 +1644,8 @@ async def _cards_lb(chat_id: int) -> str:
         return await _tomochi_luck_lb(chat_id)
     if mode and mode.get("pending") and not mode.get("active"):
         return _game_mode_start_text(mode)
-    rows = await db.leaderboard(chat_id)
+    rank_limit = await db.get_leaderboard_rank_limit(chat_id)
+    rows = await db.leaderboard(chat_id, rank_limit if rank_limit > 0 else 10000)
     html = _leaderboard_html(rows)
     if mode and mode.get("active") and rows:
         status = _mode_status_html(mode, rows)
@@ -2121,6 +2124,49 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
     if not await _is_admin(context,gid,q.from_user.id):
         await q.answer("Admins only.",show_alert=True); return
     action=p[2]; mode=await db.get_game_mode(gid)
+    if action == "lblimit":
+        value = await db.get_leaderboard_rank_limit(gid)
+        _GAME_MODE_DRAFT[(gid, q.from_user.id)] = {"mode": "lblimit", "value": value}
+        await q.answer()
+        await q.edit_message_text(
+            f"Number of players to show on leaderboard rank.\n\nMax: 20 (0=unlimited)\n\nCurrent: {'Unlimited' if value == 0 else value}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("−", callback_data=_gm_cb(gid, "lblimitminus")),
+                 InlineKeyboardButton("+", callback_data=_gm_cb(gid, "lblimitplus"))],
+                [InlineKeyboardButton("Save", callback_data=_gm_cb(gid, "lblimitsave"))],
+                [InlineKeyboardButton("Back", callback_data=_gm_cb(gid, "menu"))],
+            ])
+        )
+        return
+    if action in ("lblimitplus", "lblimitminus"):
+        draft = _GAME_MODE_DRAFT.setdefault((gid, q.from_user.id), {"mode": "lblimit", "value": await db.get_leaderboard_rank_limit(gid)})
+        value = int(draft.get("value", 20))
+        if action == "lblimitplus":
+            value = 1 if value == 0 else min(20, value + 1)
+        else:
+            value = 0 if value == 1 else max(1, value - 1)
+        draft.update(mode="lblimit", value=value)
+        await q.answer()
+        await q.edit_message_text(
+            f"Number of players to show on leaderboard rank.\n\nMax: 20 (0=unlimited)\n\nCurrent: {'Unlimited' if value == 0 else value}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("−", callback_data=_gm_cb(gid, "lblimitminus")),
+                 InlineKeyboardButton("+", callback_data=_gm_cb(gid, "lblimitplus"))],
+                [InlineKeyboardButton("Save", callback_data=_gm_cb(gid, "lblimitsave"))],
+                [InlineKeyboardButton("Back", callback_data=_gm_cb(gid, "menu"))],
+            ])
+        )
+        return
+    if action == "lblimitsave":
+        draft = _GAME_MODE_DRAFT.pop((gid, q.from_user.id), {"value": 20})
+        value = max(0, min(20, int(draft.get("value", 20))))
+        await db.set_leaderboard_rank_limit(gid, value)
+        await q.answer("Saved.")
+        await q.edit_message_text(
+            f"Leaderboard rank limit saved: {'Unlimited' if value == 0 else value}.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=_gm_cb(gid, "menu"))]])
+        )
+        return
     # Show the explanatory alert on the first press; on the next press,
     # open the corresponding configuration panel for the originating group.
     info_key = (gid, q.from_user.id, action)

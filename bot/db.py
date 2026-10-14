@@ -85,6 +85,12 @@ async def init_schema() -> None:
         await conn.execute(
             "ALTER TABLE player_stats ADD COLUMN IF NOT EXISTS prev_score INTEGER"
         )
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS leaderboard_settings (
+                chat_id BIGINT PRIMARY KEY,
+                rank_limit INTEGER NOT NULL DEFAULT 20 CHECK (rank_limit >= 0)
+            )
+        """)
         await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS house_challenges (
@@ -432,6 +438,20 @@ async def bump_stats(
                     old_ranks.get(uid),
                     old_scores.get(uid),
                 )
+
+
+async def get_leaderboard_rank_limit(chat_id: int) -> int:
+    row = await pool().fetchrow("SELECT rank_limit FROM leaderboard_settings WHERE chat_id=$1", chat_id)
+    return int(row["rank_limit"]) if row else 20
+
+
+async def set_leaderboard_rank_limit(chat_id: int, limit: int) -> None:
+    value = max(0, min(20, int(limit)))
+    await pool().execute(
+        """INSERT INTO leaderboard_settings(chat_id, rank_limit) VALUES($1,$2)
+           ON CONFLICT(chat_id) DO UPDATE SET rank_limit=EXCLUDED.rank_limit""",
+        chat_id, value,
+    )
 
 
 async def leaderboard(chat_id: int, limit: int = 15) -> list[asyncpg.Record]:
