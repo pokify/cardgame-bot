@@ -1,0 +1,5 @@
+# One Telegram group/supergroup chat ID per line.
+# Lines starting with # are ignored.
+# Leave the file empty (or only comments) to allow all groups.
+# Example:
+# -1001234567890
