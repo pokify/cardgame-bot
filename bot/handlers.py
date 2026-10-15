@@ -140,6 +140,9 @@ async def _lobby_text_for_chat(chat_id: int, players: list, flavor: str | None) 
     mode = await _effective_game_mode(chat_id)
     settings = dict(settings or {})
     settings["_game_mode"] = mode
+    # Hide the auto-play House line in Tomochi Luck lobby when house is disabled
+    if mode.get("mode") == "luck":
+        settings["_house_enabled"] = await db.tomochi_luck_house_enabled(chat_id)
     return lobby_text(players, flavor, settings)
 
 

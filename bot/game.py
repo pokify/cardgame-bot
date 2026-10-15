@@ -143,7 +143,7 @@ def lobby_text(
             "Highest Tomochi card wins!",
             "", "", "",
             f"♢ Waiting for players… ({n}/{MAX_PLAYERS})", "",
-            "1 player auto-plays the House" if n == 1 else None,
+            "1 player auto-plays the House" if (n == 1 and settings.get("_house_enabled", True)) else None,
             "", f"Players: {player_line(players)}"
         ] if line is not None)
 
