@@ -200,6 +200,14 @@ async def init_schema() -> None:
         )
         await conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS joker_cooldown (
+                chat_id   BIGINT PRIMARY KEY,
+                remaining INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        await conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS pvp_settings (
                 chat_id      BIGINT PRIMARY KEY,
                 base_2       INTEGER NOT NULL DEFAULT 5,
@@ -811,6 +819,36 @@ async def banned_cards(chat_id: int, mode: str) -> list[str]:
     for row in rows:
         out.extend(list(row["cards"] or []))
     return out
+
+
+async def get_joker_cooldown(chat_id: int) -> int:
+    row = await pool().fetchrow(
+        "SELECT remaining FROM joker_cooldown WHERE chat_id = $1",
+        chat_id,
+    )
+    return int(row["remaining"]) if row else 0
+
+
+async def update_joker_cooldown(chat_id: int, joker_appeared: bool) -> None:
+    """After a 2-player deal: set cooldown to 2 if Joker appeared, else decrement if active."""
+    if joker_appeared:
+        await pool().execute(
+            """
+            INSERT INTO joker_cooldown (chat_id, remaining)
+            VALUES ($1, 2)
+            ON CONFLICT (chat_id) DO UPDATE SET remaining = 2
+            """,
+            chat_id,
+        )
+    else:
+        await pool().execute(
+            """
+            UPDATE joker_cooldown
+            SET remaining = GREATEST(remaining - 1, 0)
+            WHERE chat_id = $1 AND remaining > 0
+            """,
+            chat_id,
+        )
 
 
 def _default_pvp_settings() -> dict:

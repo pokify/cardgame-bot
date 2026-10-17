@@ -11,7 +11,7 @@ from telegram.constants import ChatMemberStatus
 from telegram.ext import ContextTypes
 
 from bot import db
-from bot.config import AUTO_INTERVAL_SECONDS, GAME_CHAT_IDS, LOBBY_SECONDS, MAX_PLAYERS, MIN_PLAYERS, WIN_POINTS
+from bot.config import AUTO_INTERVAL_SECONDS, GAME_CHAT_IDS, LOBBY_SECONDS, MAX_PLAYERS, MIN_PLAYERS, WIN_POINTS, CARDS
 from bot.game import (
     JOKER_PENALTY,
     deal,
@@ -884,6 +884,12 @@ async def _run_tomochi_luck(context, game_id: int, chat_id: int, players: list[d
     allow_house_joker = joker_cfg["in_house"]
     penalty = joker_cfg["wins_penalty"]  # negative number, e.g. -1
 
+    # 2-player (or 1vHouse treated as 2-card) Joker cooldown override: 5% for next 2 deals after a Joker
+    is_two_card = is_house or len(players) == 2
+    cooldown = await db.get_joker_cooldown(chat_id) if is_two_card else 0
+    if cooldown > 0:
+        chance = 5  # overrides configured joker_chance
+
     # Roll for joker inclusion (Tomochi Luck exclusive)
     include_joker = (chance > 0) and (random.random() * 100 < chance)
     if is_house and not allow_house_joker:
@@ -943,6 +949,8 @@ async def _run_tomochi_luck(context, game_id: int, chat_id: int, players: list[d
     # Record memory for 2-card deals so ban works across user-vs-user 2p and user-vs-house
     if is_house or len(players) == 2:
         await db.record_deal_memory(chat_id, "luck2", [a["card_key"] for a in assignments])
+        joker_appeared = any(a.get("card_key") == "joker" for a in assignments)
+        await db.update_joker_cooldown(chat_id, joker_appeared)
 
     # For Tomochi Luck joker, replace the bottom "Score: -5" with the win penalty text.
     for a in assignments:
@@ -1039,12 +1047,52 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
     await asyncio.sleep(5)
 
     banned = await db.banned_cards(chat_id, "pvp2") if len(players) == 2 else []
-    assignments, winner, joker = deal(players, banned)
+    # 2-player Joker cooldown: after a Joker, next 2 deals have only 5% chance (overrides normal equal-pool odds)
+    if len(players) == 2:
+        cooldown = await db.get_joker_cooldown(chat_id)
+        if cooldown > 0:
+            # Force joker out of the normal pool and decide inclusion with 5% roll
+            banned = list(set(banned) | {"joker"})
+            include_joker = random.random() * 100 < 5
+        else:
+            include_joker = None  # let deal() decide normally
+    else:
+        include_joker = None
+
+    if include_joker is True:
+        # Build assignments manually with forced joker at 5%
+        from bot.game import deal as _deal
+        pool = [k for k in CARDS if k != "joker" and k not in banned]
+        if len(pool) < len(players) - 1:
+            pool = [k for k in CARDS if k != "joker"]
+        normal_keys = random.sample(pool, len(players) - 1)
+        keys = normal_keys + ["joker"]
+        random.shuffle(keys)
+        assignments = []
+        for player, key in zip(players, keys):
+            face = CARDS[key]["score"]
+            assignments.append({
+                "user_id": player["user_id"],
+                "username": player["username"],
+                "first_name": player["first_name"],
+                "card_key": key,
+                "score": face,
+                "display_score": -5 if key == "joker" else face,
+                "label": CARDS[key]["label"],
+            })
+        joker = next((a for a in assignments if a["card_key"] == "joker"), None)
+        contenders = [a for a in assignments if a["card_key"] != "joker"]
+        winner = max(contenders, key=lambda a: a["score"])
+    else:
+        assignments, winner, joker = deal(players, banned)
+
     joker_points = int(pvp["joker_points"])
     if joker:
         joker["display_score"] = joker_points
     if len(players) == 2:
         await db.record_deal_memory(chat_id, "pvp2", [a["card_key"] for a in assignments])
+        joker_appeared = joker is not None
+        await db.update_joker_cooldown(chat_id, joker_appeared)
     photo = render_deal(assignments)
     await context.bot.send_photo(chat_id, photo=InputFile(photo, filename="deal.png"))
 
