@@ -142,7 +142,7 @@ def lobby_text(
             "", "",
             "Highest Tomochi card wins!",
             "", "", "",
-            f"♢ Waiting for players… ({n}/{MAX_PLAYERS})", "",
+            f"♢ Waiting for players… ({n}/{MAX_PLAYERS}) Min. {int(settings.get('_min_players', MIN_PLAYERS))}", "",
             "1 player auto-plays the House" if (n == 1 and settings.get("_house_enabled", True)) else None,
             "", f"Players: {player_line(players)}"
         ] if line is not None)
@@ -156,7 +156,7 @@ def lobby_text(
         flavor_block.rstrip("\n") if flavor_block else None,
         "\nHighest Tomochi card wins!\n",
         "",
-        f"♢ Waiting for players… ({n}/{MAX_PLAYERS})",
+        f"♢ Waiting for players… ({n}/{MAX_PLAYERS}) Min. {int(settings.get('_min_players', MIN_PLAYERS))}",
         f"♤ Points to win: {base}",
     ]
     if bonus > 0:

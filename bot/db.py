@@ -91,6 +91,34 @@ async def init_schema() -> None:
                 rank_limit INTEGER NOT NULL DEFAULT 20 CHECK (rank_limit >= 0)
             )
         """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS gameplay_config (
+                chat_id BIGINT PRIMARY KEY,
+                min_players INTEGER NOT NULL DEFAULT 2 CHECK (min_players BETWEEN 2 AND 4),
+                lobby_minutes INTEGER NOT NULL DEFAULT 5 CHECK (lobby_minutes BETWEEN 3 AND 10),
+                house_points_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                house_risk INTEGER NOT NULL DEFAULT 5,
+                house_reward INTEGER NOT NULL DEFAULT 10,
+                leader_gap INTEGER NOT NULL DEFAULT 5,
+                boost1_gap INTEGER NOT NULL DEFAULT 0,
+                boost1_to INTEGER NOT NULL DEFAULT 0,
+                boost1_risk INTEGER NOT NULL DEFAULT 0,
+                boost1_reward INTEGER NOT NULL DEFAULT 0,
+                boost2_gap INTEGER NOT NULL DEFAULT 0,
+                boost2_to INTEGER NOT NULL DEFAULT 0,
+                boost2_risk INTEGER NOT NULL DEFAULT 0,
+                boost2_reward INTEGER NOT NULL DEFAULT 0,
+                boost3_gap INTEGER NOT NULL DEFAULT 0,
+                boost3_to INTEGER NOT NULL DEFAULT 0,
+                boost3_risk INTEGER NOT NULL DEFAULT 0,
+                boost3_reward INTEGER NOT NULL DEFAULT 0,
+                boost4_gap INTEGER NOT NULL DEFAULT 0,
+                boost4_to INTEGER NOT NULL DEFAULT 0,
+                boost4_risk INTEGER NOT NULL DEFAULT 0,
+                boost4_reward INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+
         await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS house_challenges (
@@ -1179,3 +1207,27 @@ async def set_tomochi_luck_prev_ranks(chat_id: int, ranks: dict[int, int]) -> No
 
 async def clear_tomochi_luck(chat_id: int) -> None:
     await pool().execute("DELETE FROM tomochi_luck_stats WHERE chat_id=$1", chat_id)
+
+
+async def get_gameplay_config(chat_id: int) -> dict:
+    row = await pool().fetchrow("SELECT * FROM gameplay_config WHERE chat_id=$1", chat_id)
+    if row:
+        return dict(row)
+    return {"chat_id": chat_id, "min_players": 2, "lobby_minutes": 5,
+            "house_points_enabled": True, "house_risk": 5, "house_reward": 10,
+            "leader_gap": 5, **{f"boost{i}_{k}": 0 for i in range(1,5) for k in ("gap","to","risk","reward")}}
+
+
+async def save_gameplay_config(chat_id: int, values: dict) -> None:
+    defaults = await get_gameplay_config(chat_id)
+    defaults.update(values)
+    keys = ["min_players","lobby_minutes","house_points_enabled","house_risk","house_reward","leader_gap"] + [
+        f"boost{i}_{k}" for i in range(1,5) for k in ("gap","to","risk","reward")
+    ]
+    vals = [defaults[k] for k in keys]
+    placeholders = ",".join(f"${i+2}" for i in range(len(keys)))
+    updates = ",".join(f"{k}=EXCLUDED.{k}" for k in keys)
+    await pool().execute(
+        f"INSERT INTO gameplay_config(chat_id,{','.join(keys)}) VALUES($1,{placeholders}) "
+        f"ON CONFLICT(chat_id) DO UPDATE SET {updates}", chat_id, *vals
+    )
