@@ -225,6 +225,6 @@ def deal(players: list, banned: list[str] | None = None) -> tuple[list[dict], di
     return assignments, winner, joker
 
 
-def expires_at(now: datetime | None = None) -> datetime:
+def expires_at(now: datetime | None = None, seconds: int = LOBBY_SECONDS) -> datetime:
     now = now or datetime.now(timezone.utc)
-    return now + timedelta(seconds=LOBBY_SECONDS)
+    return now + timedelta(seconds=max(1, int(seconds)))

@@ -91,34 +91,6 @@ async def init_schema() -> None:
                 rank_limit INTEGER NOT NULL DEFAULT 20 CHECK (rank_limit >= 0)
             )
         """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS gameplay_config (
-                chat_id BIGINT PRIMARY KEY,
-                min_players INTEGER NOT NULL DEFAULT 2 CHECK (min_players BETWEEN 2 AND 4),
-                lobby_minutes INTEGER NOT NULL DEFAULT 5 CHECK (lobby_minutes BETWEEN 3 AND 10),
-                house_points_enabled BOOLEAN NOT NULL DEFAULT TRUE,
-                house_risk INTEGER NOT NULL DEFAULT 5,
-                house_reward INTEGER NOT NULL DEFAULT 10,
-                leader_gap INTEGER NOT NULL DEFAULT 5,
-                boost1_gap INTEGER NOT NULL DEFAULT 0,
-                boost1_to INTEGER NOT NULL DEFAULT 0,
-                boost1_risk INTEGER NOT NULL DEFAULT 0,
-                boost1_reward INTEGER NOT NULL DEFAULT 0,
-                boost2_gap INTEGER NOT NULL DEFAULT 0,
-                boost2_to INTEGER NOT NULL DEFAULT 0,
-                boost2_risk INTEGER NOT NULL DEFAULT 0,
-                boost2_reward INTEGER NOT NULL DEFAULT 0,
-                boost3_gap INTEGER NOT NULL DEFAULT 0,
-                boost3_to INTEGER NOT NULL DEFAULT 0,
-                boost3_risk INTEGER NOT NULL DEFAULT 0,
-                boost3_reward INTEGER NOT NULL DEFAULT 0,
-                boost4_gap INTEGER NOT NULL DEFAULT 0,
-                boost4_to INTEGER NOT NULL DEFAULT 0,
-                boost4_risk INTEGER NOT NULL DEFAULT 0,
-                boost4_reward INTEGER NOT NULL DEFAULT 0
-            )
-        """)
-
         await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS house_challenges (
@@ -256,6 +228,37 @@ async def init_schema() -> None:
         await conn.execute(
             "ALTER TABLE player_stats ADD COLUMN IF NOT EXISTS house_points INTEGER NOT NULL DEFAULT 0"
         )
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS gamemode_config (
+                chat_id BIGINT PRIMARY KEY,
+                min_players INTEGER NOT NULL DEFAULT 2 CHECK (min_players BETWEEN 2 AND 4),
+                lobby_minutes INTEGER NOT NULL DEFAULT 5 CHECK (lobby_minutes BETWEEN 3 AND 10),
+                house_points_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                default_house_risk INTEGER NOT NULL DEFAULT 0,
+                default_house_reward INTEGER NOT NULL DEFAULT 0,
+                leader_disable_gap INTEGER NOT NULL DEFAULT 5
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS house_gap_boost (
+                chat_id BIGINT NOT NULL,
+                slot INTEGER NOT NULL CHECK (slot BETWEEN 1 AND 4),
+                gap_from INTEGER NOT NULL DEFAULT 0,
+                gap_to INTEGER NOT NULL DEFAULT 0,
+                risk INTEGER NOT NULL DEFAULT 0,
+                reward INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(chat_id, slot)
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS mode_joker_settings (
+                chat_id BIGINT NOT NULL,
+                mode TEXT NOT NULL,
+                chance INTEGER NOT NULL DEFAULT 15 CHECK (chance BETWEEN 0 AND 100),
+                penalty INTEGER NOT NULL DEFAULT -5 CHECK (penalty BETWEEN -30 AND -1),
+                PRIMARY KEY(chat_id, mode)
+            )
+        """)
 
 
 async def active_game(chat_id: int) -> asyncpg.Record | None:
@@ -632,6 +635,10 @@ async def pvp_games_played(chat_id: int, user_id: int) -> int:
 
 async def house_enabled(chat_id: int) -> bool:
     settings = await get_house_settings(chat_id)
+    mode = await get_game_mode(chat_id)
+    if mode and (mode.get("active") or mode.get("pending")) and mode.get("mode") in ("first", "highest"):
+        cfg = await get_gamemode_config(chat_id)
+        return bool(settings["house_enabled"] and cfg["house_points_enabled"])
     return bool(settings["house_enabled"])
 
 
@@ -1209,25 +1216,64 @@ async def clear_tomochi_luck(chat_id: int) -> None:
     await pool().execute("DELETE FROM tomochi_luck_stats WHERE chat_id=$1", chat_id)
 
 
-async def get_gameplay_config(chat_id: int) -> dict:
-    row = await pool().fetchrow("SELECT * FROM gameplay_config WHERE chat_id=$1", chat_id)
-    if row:
-        return dict(row)
-    return {"chat_id": chat_id, "min_players": 2, "lobby_minutes": 5,
-            "house_points_enabled": True, "house_risk": 5, "house_reward": 10,
-            "leader_gap": 5, **{f"boost{i}_{k}": 0 for i in range(1,5) for k in ("gap","to","risk","reward")}}
+async def get_gamemode_config(chat_id: int) -> dict:
+    row = await pool().fetchrow("SELECT * FROM gamemode_config WHERE chat_id=$1", chat_id)
+    if not row:
+        return {"min_players": 2, "lobby_minutes": 5, "house_points_enabled": True,
+                "default_house_risk": 0, "default_house_reward": 0, "leader_disable_gap": 5}
+    return dict(row)
 
 
-async def save_gameplay_config(chat_id: int, values: dict) -> None:
-    defaults = await get_gameplay_config(chat_id)
-    defaults.update(values)
-    keys = ["min_players","lobby_minutes","house_points_enabled","house_risk","house_reward","leader_gap"] + [
-        f"boost{i}_{k}" for i in range(1,5) for k in ("gap","to","risk","reward")
-    ]
-    vals = [defaults[k] for k in keys]
-    placeholders = ",".join(f"${i+2}" for i in range(len(keys)))
-    updates = ",".join(f"{k}=EXCLUDED.{k}" for k in keys)
-    await pool().execute(
-        f"INSERT INTO gameplay_config(chat_id,{','.join(keys)}) VALUES($1,{placeholders}) "
-        f"ON CONFLICT(chat_id) DO UPDATE SET {updates}", chat_id, *vals
-    )
+async def save_gamemode_config(chat_id: int, **values) -> dict:
+    current = await get_gamemode_config(chat_id)
+    current.update(values)
+    current["min_players"] = max(2, min(4, int(current["min_players"])))
+    current["lobby_minutes"] = max(3, min(10, int(current["lobby_minutes"])))
+    current["default_house_risk"] = max(0, min(50, int(current["default_house_risk"])))
+    current["default_house_reward"] = max(0, min(50, int(current["default_house_reward"])))
+    current["leader_disable_gap"] = max(0, min(50, int(current["leader_disable_gap"])))
+    await pool().execute("""
+        INSERT INTO gamemode_config(chat_id,min_players,lobby_minutes,house_points_enabled,
+          default_house_risk,default_house_reward,leader_disable_gap)
+        VALUES($1,$2,$3,$4,$5,$6,$7)
+        ON CONFLICT(chat_id) DO UPDATE SET min_players=EXCLUDED.min_players,
+          lobby_minutes=EXCLUDED.lobby_minutes,house_points_enabled=EXCLUDED.house_points_enabled,
+          default_house_risk=EXCLUDED.default_house_risk,default_house_reward=EXCLUDED.default_house_reward,
+          leader_disable_gap=EXCLUDED.leader_disable_gap
+    """, chat_id, current["min_players"], current["lobby_minutes"], current["house_points_enabled"],
+         current["default_house_risk"], current["default_house_reward"], current["leader_disable_gap"])
+    return current
+
+
+async def get_house_gap_boosts(chat_id: int) -> list[dict]:
+    rows = await pool().fetch("SELECT * FROM house_gap_boost WHERE chat_id=$1 ORDER BY slot", chat_id)
+    values = {int(r["slot"]): dict(r) for r in rows}
+    result = []
+    for slot in range(1, 5):
+        result.append(values.get(slot, {"chat_id": chat_id, "slot": slot, "gap_from": 0, "gap_to": 0, "risk": 0, "reward": 0}))
+    return result
+
+
+async def save_house_gap_boost(chat_id: int, slot: int, **values) -> None:
+    current = (await get_house_gap_boosts(chat_id))[max(0, min(3, int(slot)-1))]
+    current.update(values)
+    for key in ("gap_from", "gap_to", "risk", "reward"):
+        current[key] = max(0, min(100, int(current[key])))
+    await pool().execute("""
+        INSERT INTO house_gap_boost(chat_id,slot,gap_from,gap_to,risk,reward)
+        VALUES($1,$2,$3,$4,$5,$6)
+        ON CONFLICT(chat_id,slot) DO UPDATE SET gap_from=EXCLUDED.gap_from,
+          gap_to=EXCLUDED.gap_to,risk=EXCLUDED.risk,reward=EXCLUDED.reward
+    """, chat_id, int(slot), current["gap_from"], current["gap_to"], current["risk"], current["reward"])
+
+
+async def get_mode_joker_settings(chat_id: int, mode: str) -> dict:
+    row = await pool().fetchrow("SELECT chance,penalty FROM mode_joker_settings WHERE chat_id=$1 AND mode=$2", chat_id, mode)
+    return dict(row) if row else {"chance": 15, "penalty": -5}
+
+
+async def set_mode_joker_settings(chat_id: int, mode: str, chance: int, penalty: int) -> None:
+    await pool().execute("""
+        INSERT INTO mode_joker_settings(chat_id,mode,chance,penalty) VALUES($1,$2,$3,$4)
+        ON CONFLICT(chat_id,mode) DO UPDATE SET chance=EXCLUDED.chance,penalty=EXCLUDED.penalty
+    """, chat_id, mode, max(0,min(100,int(chance))), max(-30,min(-1,int(penalty))))
