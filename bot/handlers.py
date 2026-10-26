@@ -2388,21 +2388,36 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
         await q.edit_message_text("House Points settings saved.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back",callback_data=_gm_cb(gid,"house2"))]]))
         return
     if action.startswith("modejokeropen:"):
-        which=action.split(":",1)[1].strip().lower()
+        which = action.split(":", 1)[1].strip().lower()
         if which not in ("first", "highest"):
             await q.answer("Unknown game mode Joker config.", show_alert=True)
             return
         try:
             cfg = await db.get_mode_joker_settings(gid, which)
-            cfg = {"chance": max(0, min(100, int(cfg.get("chance", 15))),),
-                   "penalty": max(-30, min(-1, int(cfg.get("penalty", -5))))}
-            _GAME_MODE_DRAFT[(gid,q.from_user.id)]={"mode":"modejoker","which":which,
-                                                    "chance":cfg["chance"],"penalty":cfg["penalty"]}
+            cfg = {
+                "chance": max(0, min(100, int(cfg.get("chance", 15)))),
+                "penalty": max(-30, min(-1, int(cfg.get("penalty", -5)))),
+            }
+            _GAME_MODE_DRAFT[(gid, q.from_user.id)] = {
+                "mode": "modejoker",
+                "which": which,
+                "chance": cfg["chance"],
+                "penalty": cfg["penalty"],
+            }
+            # Send the panel as a new message. The source menu can be stale or
+            # otherwise non-editable; opening settings must not depend on editing it.
             await q.answer()
-            await q.edit_message_text(_joker_mode_text(cfg), reply_markup=_joker_mode_keyboard(gid,which,cfg))
+            await context.bot.send_message(
+                chat_id=q.message.chat_id,
+                text=_joker_mode_text(cfg),
+                reply_markup=_joker_mode_keyboard(gid, which, cfg),
+            )
         except Exception:
             log.exception("Could not open %s Joker config for group %s", which, gid)
-            await q.answer("Could not open Joker config. Please try again.", show_alert=True)
+            try:
+                await q.answer("Could not open Joker config. Check bot logs for details.", show_alert=True)
+            except Exception:
+                pass
         return
     if action.startswith("modejoker:"):
         bits=action.split(":")
