@@ -1357,10 +1357,10 @@ def _pvp_cfg_text(draft: dict) -> str:
     def bonus(n: int) -> int:
         return 0 if draft[f"base_{n}"] <= 0 else draft[f"bonus_{n}"]
     return (
-        "<b>PvP Points Config</b>\\n\\n"
-        "Per Match + join bonus:\\n"
-        f"2P[+{draft['base_2']}] bonus [+{bonus(2)}]\\n"
-        f"3P[+{draft['base_3']}] bonus [+{bonus(3)}]\\n"
+        "<b>PvP Points Config</b>\n\n"
+        "Per Match + join bonus:\n"
+        f"2P[+{draft['base_2']}] bonus [+{bonus(2)}]\n"
+        f"3P[+{draft['base_3']}] bonus [+{bonus(3)}]\n"
         f"4P[+{draft['base_4']}] bonus [+{bonus(4)}]"
     )
 
@@ -2272,6 +2272,7 @@ def _house_points_keyboard(gid: int, cfg: dict, boosts: list[dict]):
     ]
     for b in boosts:
         slot=int(b["slot"])
+        # Two-row layout per boost, matching the supplied diagram.
         rows.append([
             InlineKeyboardButton("Gap:",callback_data=_gm_cb(gid,"hpnoop")),
             InlineKeyboardButton("−",callback_data=_gm_cb(gid,f"hp:{slot}:gap_from:-")),
@@ -2279,10 +2280,11 @@ def _house_points_keyboard(gid: int, cfg: dict, boosts: list[dict]):
             InlineKeyboardButton("to",callback_data=_gm_cb(gid,"hpnoop")),
             InlineKeyboardButton("−",callback_data=_gm_cb(gid,f"hp:{slot}:gap_to:-")),
             InlineKeyboardButton("+",callback_data=_gm_cb(gid,f"hp:{slot}:gap_to:+")),
-            InlineKeyboardButton("R/R:",callback_data=_gm_cb(gid,"hpnoop")),
+        ])
+        rows.append([
             InlineKeyboardButton("−",callback_data=_gm_cb(gid,f"hp:{slot}:risk:-")),
             InlineKeyboardButton("+",callback_data=_gm_cb(gid,f"hp:{slot}:risk:+")),
-            InlineKeyboardButton("/",callback_data=_gm_cb(gid,"hpnoop")),
+            InlineKeyboardButton("R/R",callback_data=_gm_cb(gid,"hpnoop")),
             InlineKeyboardButton("−",callback_data=_gm_cb(gid,f"hp:{slot}:reward:-")),
             InlineKeyboardButton("+",callback_data=_gm_cb(gid,f"hp:{slot}:reward:+")),
         ])
@@ -2386,11 +2388,21 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
         await q.edit_message_text("House Points settings saved.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back",callback_data=_gm_cb(gid,"house2"))]]))
         return
     if action.startswith("modejokeropen:"):
-        which=action.split(":",1)[1]
-        cfg=await db.get_mode_joker_settings(gid,which)
-        _GAME_MODE_DRAFT[(gid,q.from_user.id)]={"mode":"modejoker","which":which,"chance":cfg["chance"],"penalty":cfg["penalty"]}
-        await q.answer()
-        await q.edit_message_text(_joker_mode_text(cfg),reply_markup=_joker_mode_keyboard(gid,which,cfg))
+        which=action.split(":",1)[1].strip().lower()
+        if which not in ("first", "highest"):
+            await q.answer("Unknown game mode Joker config.", show_alert=True)
+            return
+        try:
+            cfg = await db.get_mode_joker_settings(gid, which)
+            cfg = {"chance": max(0, min(100, int(cfg.get("chance", 15))),),
+                   "penalty": max(-30, min(-1, int(cfg.get("penalty", -5))))}
+            _GAME_MODE_DRAFT[(gid,q.from_user.id)]={"mode":"modejoker","which":which,
+                                                    "chance":cfg["chance"],"penalty":cfg["penalty"]}
+            await q.answer()
+            await q.edit_message_text(_joker_mode_text(cfg), reply_markup=_joker_mode_keyboard(gid,which,cfg))
+        except Exception:
+            log.exception("Could not open %s Joker config for group %s", which, gid)
+            await q.answer("Could not open Joker config. Please try again.", show_alert=True)
         return
     if action.startswith("modejoker:"):
         bits=action.split(":")
