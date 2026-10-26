@@ -259,6 +259,14 @@ async def init_schema() -> None:
                 PRIMARY KEY(chat_id, mode)
             )
         """)
+        # Migrate existing Railway databases too: CREATE TABLE IF NOT EXISTS does
+        # not add columns to a table created by an older bot version.
+        await conn.execute(
+            "ALTER TABLE mode_joker_settings ADD COLUMN IF NOT EXISTS chance INTEGER NOT NULL DEFAULT 15"
+        )
+        await conn.execute(
+            "ALTER TABLE mode_joker_settings ADD COLUMN IF NOT EXISTS penalty INTEGER NOT NULL DEFAULT -5"
+        )
 
 
 async def active_game(chat_id: int) -> asyncpg.Record | None:
