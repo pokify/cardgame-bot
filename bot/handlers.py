@@ -135,37 +135,25 @@ def _plain_player_name(player) -> str:
     return str(player.get("username") or player.get("first_name") or "player").lstrip("@").replace("<", "").replace(">", "")
 
 
-
-async def _house_available_for_mode(chat_id: int) -> bool:
-    mode = await _effective_game_mode(chat_id)
-    if mode.get("mode") in ("first", "highest"):
-        hp = await db.get_house_points_settings(chat_id)
-        return bool(hp.get("enabled"))
-    return await db.house_enabled(chat_id)
-
 async def _lobby_text_for_chat(chat_id: int, players: list, flavor: str | None) -> str:
     settings = await db.get_pvp_settings(chat_id)
     mode = await _effective_game_mode(chat_id)
-    lobby_cfg = await db.get_lobby_config(chat_id)
     settings = dict(settings or {})
     settings["_game_mode"] = mode
-    settings["_min_players"] = lobby_cfg.get("min_players", 2)
     # Hide the auto-play House line in Tomochi Luck lobby when house is disabled
     if mode.get("mode") == "luck":
         settings["_house_enabled"] = await db.tomochi_luck_house_enabled(chat_id)
     return lobby_text(players, flavor, settings)
 
 
-async def _schedule_expire(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: int) -> None:
+def _schedule_expire(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: int) -> None:
     jq = context.job_queue
     name = f"expire:{game_id}"
     for job in jq.get_jobs_by_name(name):
         job.schedule_removal()
-    lobby_cfg = await db.get_lobby_config(chat_id)
-    seconds = int(lobby_cfg.get("lobby_minutes", 5)) * 60
     jq.run_once(
         expire_job,
-        when=seconds,
+        when=LOBBY_SECONDS,
         data={"game_id": game_id, "chat_id": chat_id},
         name=name,
         chat_id=chat_id,
@@ -421,7 +409,7 @@ async def cards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             _schedule_mode_end(context, chat.id, activated)
 
     try:
-        house_on = await _house_available_for_mode(chat.id)
+        house_on = await db.house_enabled(chat.id)
     except Exception:
         log.exception("Could not load House availability while creating lobby")
         house_on = False
@@ -441,7 +429,7 @@ async def cards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     await db.set_message_id(game["id"], msg.message_id)
-    await _schedule_expire(context, game["id"], chat.id)
+    _schedule_expire(context, game["id"], chat.id)
 
 
 async def join_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -497,7 +485,7 @@ async def join_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         else:
             run_game = False
             text = await _lobby_text_for_chat(chat.id, players, game["flavor"])
-            house_on = await _house_available_for_mode(chat.id)
+            house_on = await db.house_enabled(chat.id)
             markup = lobby_keyboard(game_id, house_available=house_on and len(players) <= 1, luck_mode=(await _effective_game_mode(chat.id)).get("mode") == "luck")
 
             # The message that contained the clicked button may already have
@@ -654,14 +642,7 @@ async def house_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     settings = await db.get_house_settings(group_chat.id)
-    mode = await db.get_game_mode(group_chat.id)
-    is_points = mode and mode.get("mode") in ("first", "highest")
-    if is_points:
-        hp = await db.get_house_points_settings(group_chat.id)
-        if not hp.get("enabled"):
-            await query.answer("House challenges are disabled in this group.", show_alert=True)
-            return
-    elif not settings["house_enabled"]:
+    if not settings["house_enabled"]:
         await query.answer("House challenges are disabled in this group.", show_alert=True)
         return
 
@@ -753,38 +734,9 @@ async def _run_house_challenge(
     )
 
     # This announcement is intentionally permanent and visible to everyone.
-    mode = await db.get_game_mode(chat_id)
-    is_points_mode = mode and mode.get("mode") in ("first", "highest") and (mode.get("active") or mode.get("pending"))
-    hp = await db.get_house_points_settings(chat_id) if is_points_mode else None
-    msg = f"{player_tag} has challenged\nthe house! <tg-emoji emoji-id=\"5962888046918506770\">⚔️</tg-emoji>"
-    if is_points_mode and hp and hp.get("enabled"):
-        # Compute points behind leader
-        leader_score = 0
-        player_score = 0
-        try:
-            lb = await db.leaderboard(chat_id, 1)
-            if lb:
-                leader_score = int(lb[0]["score"])
-            pr = await db.pool().fetchrow("SELECT score FROM player_stats WHERE chat_id=$1 AND user_id=$2", chat_id, user_id)
-            if pr:
-                player_score = int(pr["score"])
-        except Exception:
-            pass
-        behind = max(0, leader_score - player_score)
-        # Find matching gap
-        matched = None
-        for g in hp.get("gaps", []):
-            if g["from"] <= behind <= g["to"] and (g["risk"] != 0 or g["reward"] != 0):
-                matched = g
-                break
-        if matched:
-            msg += f"\n\n-{behind} points behind leader\n\nHouse boost offer: \nRisk: -{abs(matched['risk'])} / Reward: +{matched['reward']}"
-        else:
-            # default
-            msg += f"\n\nFixed House points : \nRisk: -{abs(hp.get('default_risk',0))} / Reward: +{hp.get('default_reward',0)}"
     await context.bot.send_message(
         chat_id,
-        msg,
+        f"{player_tag} has challenged\nthe house! <tg-emoji emoji-id=\"5962888046918506770\">⚔️</tg-emoji>",
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
@@ -803,40 +755,11 @@ async def _run_house_challenge(
     )
 
     player_won = winner["user_id"] == player["user_id"]
-    # Use new house points settings for points modes if enabled
-    mode = await db.get_game_mode(chat_id)
-    is_points_mode = mode and mode.get("mode") in ("first", "highest") and (mode.get("active") or mode.get("pending"))
-    hp = await db.get_house_points_settings(chat_id) if is_points_mode else None
+    pvp = await db.get_pvp_settings(chat_id)
+    rr_on = db.house_rr_active(pvp)
     delta = 0
-    if is_points_mode and hp and hp.get("enabled"):
-        # Recompute behind for accuracy
-        leader_score = 0
-        player_score = 0
-        try:
-            lb = await db.leaderboard(chat_id, 1)
-            if lb:
-                leader_score = int(lb[0]["score"])
-            pr = await db.pool().fetchrow("SELECT score FROM player_stats WHERE chat_id=$1 AND user_id=$2", chat_id, user_id)
-            if pr:
-                player_score = int(pr["score"])
-        except Exception:
-            pass
-        behind = max(0, leader_score - player_score)
-        matched = None
-        for g in hp.get("gaps", []):
-            if g["from"] <= behind <= g["to"] and (g["risk"] != 0 or g["reward"] != 0):
-                matched = g
-                break
-        if matched:
-            delta = matched["reward"] if player_won else matched["risk"]
-        else:
-            delta = hp.get("default_reward", 0) if player_won else -abs(hp.get("default_risk", 0))
-    else:
-        # Fallback to old pvp house r/r
-        pvp = await db.get_pvp_settings(chat_id)
-        rr_on = db.house_rr_active(pvp)
-        if rr_on:
-            delta = int(pvp["house_reward"]) if player_won else -int(pvp["house_risk"])
+    if rr_on:
+        delta = int(pvp["house_reward"]) if player_won else -int(pvp["house_risk"])
 
     # House challenges count toward the same combined leaderboard W/P totals
     # as PvP. Score and H are both changed by the House result.
@@ -919,11 +842,9 @@ async def expire_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     players = await db.list_players(game_id)
-    lobby_cfg = await db.get_lobby_config(chat_id)
-    min_p = lobby_cfg.get("min_players", 2)
-    mode = await db.get_game_mode(chat_id)
-    luck_default = not mode or not (mode.get("active") or mode.get("pending")) or mode.get("mode") == "luck"
-    if len(players) < min_p:
+    if len(players) < MIN_PLAYERS:
+        mode = await db.get_game_mode(chat_id)
+        luck_default = not mode or not (mode.get("active") or mode.get("pending"))
         if luck_default and len(players) == 1 and await db.tomochi_luck_house_enabled(chat_id):
             await _run_game(context, game_id, chat_id)
             return
@@ -1090,11 +1011,9 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
         return
 
     players = await db.list_players(game_id)
-    lobby_cfg = await db.get_lobby_config(chat_id)
-    min_p = lobby_cfg.get("min_players", 2)
     current_mode = await db.get_game_mode(chat_id)
-    luck_default = not current_mode or not (current_mode.get("active") or current_mode.get("pending")) or current_mode.get("mode") == "luck"
-    if len(players) < min_p:
+    luck_default = not current_mode or not (current_mode.get("active") or current_mode.get("pending"))
+    if len(players) < MIN_PLAYERS:
         if not (luck_default and len(players) == 1 and await db.tomochi_luck_house_enabled(chat_id)):
             await db.set_status(game_id, "expired")
             return
@@ -1128,10 +1047,6 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
     await asyncio.sleep(5)
 
     banned = await db.banned_cards(chat_id, "pvp2") if len(players) == 2 else []
-    # Mode-specific joker for first/highest
-    mode_joker = None
-    if current_mode and current_mode.get("mode") in ("first", "highest"):
-        mode_joker = await db.get_mode_joker(chat_id, current_mode["mode"])
     # 2-player Joker cooldown: after a Joker, next 2 deals have only 5% chance (overrides normal equal-pool odds)
     if len(players) == 2:
         cooldown = await db.get_joker_cooldown(chat_id)
@@ -1143,11 +1058,6 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
             include_joker = None  # let deal() decide normally
     else:
         include_joker = None
-    # Override with mode joker chance if set
-    if mode_joker and mode_joker["chance"] > 0:
-        include_joker = random.random() * 100 < mode_joker["chance"]
-        if not include_joker:
-            banned = list(set(banned) | {"joker"})
 
     if include_joker is True:
         # Build assignments manually with forced joker at 5%
@@ -1176,7 +1086,7 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
     else:
         assignments, winner, joker = deal(players, banned)
 
-    joker_points = mode_joker["score"] if mode_joker else int(pvp["joker_points"])
+    joker_points = int(pvp["joker_points"])
     if joker:
         joker["display_score"] = joker_points
     if len(players) == 2:
@@ -1385,11 +1295,13 @@ def _pvp_cfg_text(draft: dict) -> str:
         return 0 if draft[f"base_{n}"] <= 0 else draft[f"bonus_{n}"]
 
     return (
-        "<b>PvP Points Config</b>\n\n"
+        "<b>Points Config</b>\n\n"
         "Per Match + join bonus:\n"
         f"2P[+{draft['base_2']}] bonus [+{bonus(2)}]\n"
         f"3P[+{draft['base_3']}] bonus [+{bonus(3)}]\n"
         f"4P[+{draft['base_4']}] bonus [+{bonus(4)}]\n\n"
+        "House Risk/Reward:\n"
+        f"Risk[{draft['house_risk']}]|Reward [{draft['house_reward']}]\n\n"
         f"Joker: [{draft['joker_points']}]"
     )
 
@@ -1408,6 +1320,7 @@ def _pvp_cfg_keyboard(draft: dict):
             [InlineKeyboardButton("2P", callback_data="pc:noop")] + pair("b2") + [InlineKeyboardButton("B", callback_data="pc:noop")] + pair("n2"),
             [InlineKeyboardButton("3P", callback_data="pc:noop")] + pair("b3") + [InlineKeyboardButton("B", callback_data="pc:noop")] + pair("n3"),
             [InlineKeyboardButton("4P", callback_data="pc:noop")] + pair("b4") + [InlineKeyboardButton("B", callback_data="pc:noop")] + pair("n4"),
+            [InlineKeyboardButton("HRI", callback_data="pc:noop")] + pair("rk") + [InlineKeyboardButton("HRW", callback_data="pc:noop")] + pair("rw"),
             [InlineKeyboardButton("Joker", callback_data="pc:noop")] + pair("jk"),
             [InlineKeyboardButton("Save", callback_data="pc:save")],
         ]
@@ -1517,9 +1430,7 @@ def _gm_menu_keyboard(group_id:int,mode):
           [InlineKeyboardButton("Tomochi Luck",callback_data=_gm_cb(group_id,"luck"))],
           [InlineKeyboardButton("Game Bump Alert",callback_data=_gm_cb(group_id,"bump"))],
           [InlineKeyboardButton("Points Settings",callback_data=_gm_cb(group_id,"pointsinfo"))],
-          [InlineKeyboardButton("New House",callback_data=_gm_cb(group_id,"newhouse"))],
           [InlineKeyboardButton("House Settings",callback_data=_gm_cb(group_id,"houseinfo"))],
-          [InlineKeyboardButton("Config minimum players",callback_data=_gm_cb(group_id,"minplayers"))],
           [InlineKeyboardButton("lb rank limit",callback_data=_gm_cb(group_id,"lblimit"))]]
     return InlineKeyboardMarkup(rows)
 
@@ -1536,8 +1447,6 @@ async def _gm_control_keyboard(group_id:int,mode):
         rows.append([InlineKeyboardButton("End Current Game",callback_data=_gm_cb(group_id,"end"))])
         label="Reset game keep current target" if mode["mode"]=="first" else "Restart game clear leaderboard"
         rows.append([InlineKeyboardButton(label,callback_data=_gm_cb(group_id,"restart"))])
-        # Place joker config above clear winners history
-        rows.append([InlineKeyboardButton("Joker Config",callback_data=_gm_cb(group_id,f"modejoker:{mode['mode']}"))])
         if await db.game_mode_history_exists(group_id,mode["mode"]):
             rows.append([InlineKeyboardButton("clear winners history",callback_data=_gm_cb(group_id,f"history:{mode['mode']}"))])
     rows.append([InlineKeyboardButton("Back",callback_data=_gm_cb(group_id,"menu"))])
@@ -1548,45 +1457,6 @@ def _gm_start_text(mode:str,value:int)->str:
     if mode=="first":
         return f"<b>Game mode: First to x points</b>\n\nPlayer to reach target point first wins.\n\nTarget: {value}"
     return f"<b>Game mode: Highest Score Wins</b>\n\nHighest score wins after set amount of days\n\nDays : {value}"
-
-
-def _house_points_text(hp: dict) -> str:
-    gaps_txt = []
-    for g in hp.get("gaps", []):
-        fr, to, r, w = g.get("from",0), g.get("to",0), g.get("risk",0), g.get("reward",0)
-        gaps_txt.append(f"Pts Gap {fr}-{to}: risk/rwd -{abs(r)}/{w}")
-    return (
-        "<b>Configure house challenge risk and reward points for all players and house boost.</b>\n\n"
-        f"Default House Risk/Reward: {hp.get('default_risk',0)}/{hp.get('default_reward',0)}\n\n"
-        f"Temporarily disable house for leader if ahead by: {hp.get('gap_disable_leader',0)} points\n\n"
-        "House R/R gap boost for players behind leader. Triggers in-game:\n\n" +
-        "\n".join(gaps_txt)
-    )
-
-
-def _house_points_keyboard(group_id: int, hp: dict):
-    rows = [
-        [InlineKeyboardButton("Default RSK −", callback_data=_gm_cb(group_id, "hp_dr-")),
-         InlineKeyboardButton("Default RSK +", callback_data=_gm_cb(group_id, "hp_dr+")),
-         InlineKeyboardButton("Default RWD −", callback_data=_gm_cb(group_id, "hp_dw-")),
-         InlineKeyboardButton("Default RWD +", callback_data=_gm_cb(group_id, "hp_dw+"))],
-        [InlineKeyboardButton("Gap disable −", callback_data=_gm_cb(group_id, "hp_gd-")),
-         InlineKeyboardButton("Gap disable +", callback_data=_gm_cb(group_id, "hp_gd+"))],
-    ]
-    for i in range(4):
-        rows.append([
-            InlineKeyboardButton(f"G{i+1}f−", callback_data=_gm_cb(group_id, f"hp_g{i}f-")),
-            InlineKeyboardButton(f"G{i+1}f+", callback_data=_gm_cb(group_id, f"hp_g{i}f+")),
-            InlineKeyboardButton(f"G{i+1}t−", callback_data=_gm_cb(group_id, f"hp_g{i}t-")),
-            InlineKeyboardButton(f"G{i+1}t+", callback_data=_gm_cb(group_id, f"hp_g{i}t+")),
-            InlineKeyboardButton(f"G{i+1}r−", callback_data=_gm_cb(group_id, f"hp_g{i}r-")),
-            InlineKeyboardButton(f"G{i+1}r+", callback_data=_gm_cb(group_id, f"hp_g{i}r+")),
-            InlineKeyboardButton(f"G{i+1}w−", callback_data=_gm_cb(group_id, f"hp_g{i}w-")),
-            InlineKeyboardButton(f"G{i+1}w+", callback_data=_gm_cb(group_id, f"hp_g{i}w+")),
-        ])
-    rows.append([InlineKeyboardButton("Save House Points", callback_data=_gm_cb(group_id, "hpsave"))])
-    rows.append([InlineKeyboardButton("Back", callback_data=_gm_cb(group_id, "newhouse"))])
-    return InlineKeyboardMarkup(rows)
 
 
 def _gm_digit_keyboard(group_id:int,mode:str):
@@ -2000,7 +1870,7 @@ async def bump_lobby_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
         house_available = False
         try:
-            house_available = (await _house_available_for_mode(chat_id)) and len(players) <= 1
+            house_available = (await db.house_enabled(chat_id)) and len(players) <= 1
         except Exception:
             log.exception("Could not load house availability for lobby bump")
 
@@ -2464,25 +2334,17 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=_gm_cb(gid,"menu"))]]))
         return
     if action in ("highest","first"):
-        # Always lead to submenu with Start New Game and Joker Config
-        label = "First to x points" if action == "first" else "Highest Score Wins"
-        rows = [
-            [InlineKeyboardButton("Start New Game", callback_data=_gm_cb(gid, f"startnew:{action}"))],
-            [InlineKeyboardButton("Joker Config", callback_data=_gm_cb(gid, f"modejoker:{action}"))],
-            [InlineKeyboardButton("Back", callback_data=_gm_cb(gid, "menu"))],
-        ]
-        await q.answer()
-        await q.edit_message_text(f"<b>{label}</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows))
-        return
-    if action.startswith("startnew:"):
-        which = action.split(":", 1)[1]
+        # A pending/saved mode is already the current game for Game Mode
+        # controls. Treat it exactly like an active mode here so selecting
+        # the same mode opens its control screen instead of the new-game
+        # configuration keypad.
         if mode and (mode.get("active") or mode.get("pending")):
-            if mode["mode"] != which:
-                await q.answer("End or reset the current game before choosing another mode.", show_alert=True); return
-            kb = await _gm_control_keyboard(gid, mode)
-            await q.answer(); await q.edit_message_text(_gm_control_text(mode), parse_mode="HTML", reply_markup=kb); return
-        _GAME_MODE_DRAFT[(gid, q.from_user.id)] = {"mode": which, "value": 0}
-        await q.answer(); await q.edit_message_text(_gm_start_text(which, 0), parse_mode="HTML", reply_markup=_gm_digit_keyboard(gid, which)); return
+            if mode["mode"]!=action:
+                await q.answer("End or reset the current game before choosing another mode.",show_alert=True); return
+            kb=await _gm_control_keyboard(gid,mode)
+            await q.answer(); await q.edit_message_text(_gm_control_text(mode),parse_mode="HTML",reply_markup=kb); return
+        _GAME_MODE_DRAFT[(gid,q.from_user.id)]={"mode":action,"value":0}
+        await q.answer(); await q.edit_message_text(_gm_start_text(action,0),parse_mode="HTML",reply_markup=_gm_digit_keyboard(gid,action)); return
     if action.startswith("digit:"):
         _,which,digit=action.split(":",2)
         draft=_GAME_MODE_DRAFT.setdefault((gid,q.from_user.id),{"mode":which,"value":0})
@@ -2535,273 +2397,6 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
     if action.startswith("clearhistory:"):
         which=action.split(":",1)[1]; await db.clear_game_mode_history(gid,which)
         await q.answer("History cleared."); await q.edit_message_text("History cleared.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back",callback_data=_gm_cb(gid,"menu"))]])); return
-
-    # --- New configs: min players, new house, mode jokers ---
-    if action == "minplayers":
-        cfg = await db.get_lobby_config(gid)
-        _GAME_MODE_DRAFT[(gid, q.from_user.id)] = {"mode": "minplayers", **cfg}
-        text = (
-            "Config minimum players and time before a game can start.\n\n"
-            f"Min Players: {cfg['min_players']}\n\n"
-            f"Time before game starts: {cfg['lobby_minutes']}mins"
-        )
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Min Players −", callback_data=_gm_cb(gid, "minp-")),
-             InlineKeyboardButton("Min Players +", callback_data=_gm_cb(gid, "minp+"))],
-            [InlineKeyboardButton("Time −", callback_data=_gm_cb(gid, "time-")),
-             InlineKeyboardButton("Time +", callback_data=_gm_cb(gid, "time+"))],
-            [InlineKeyboardButton("Save", callback_data=_gm_cb(gid, "minpsave"))],
-            [InlineKeyboardButton("Back", callback_data=_gm_cb(gid, "menu"))],
-        ])
-        await q.answer()
-        await q.edit_message_text(text, reply_markup=kb)
-        return
-    if action in ("minp+", "minp-", "time+", "time-"):
-        draft = _GAME_MODE_DRAFT.setdefault((gid, q.from_user.id), {"mode": "minplayers", **(await db.get_lobby_config(gid))})
-        if action == "minp+":
-            draft["min_players"] = min(4, draft.get("min_players", 2) + 1)
-        elif action == "minp-":
-            draft["min_players"] = max(2, draft.get("min_players", 2) - 1)
-        elif action == "time+":
-            draft["lobby_minutes"] = min(10, draft.get("lobby_minutes", 5) + 1)
-        elif action == "time-":
-            draft["lobby_minutes"] = max(3, draft.get("lobby_minutes", 5) - 1)
-        text = (
-            "Config minimum players and time before a game can start.\n\n"
-            f"Min Players: {draft['min_players']}\n\n"
-            f"Time before game starts: {draft['lobby_minutes']}mins"
-        )
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Min Players −", callback_data=_gm_cb(gid, "minp-")),
-             InlineKeyboardButton("Min Players +", callback_data=_gm_cb(gid, "minp+"))],
-            [InlineKeyboardButton("Time −", callback_data=_gm_cb(gid, "time-")),
-             InlineKeyboardButton("Time +", callback_data=_gm_cb(gid, "time+"))],
-            [InlineKeyboardButton("Save", callback_data=_gm_cb(gid, "minpsave"))],
-            [InlineKeyboardButton("Back", callback_data=_gm_cb(gid, "menu"))],
-        ])
-        await q.answer()
-        await q.edit_message_text(text, reply_markup=kb)
-        return
-    if action == "minpsave":
-        draft = _GAME_MODE_DRAFT.get((gid, q.from_user.id), {})
-        await db.save_lobby_config(gid, draft.get("min_players", 2), draft.get("lobby_minutes", 5))
-        await q.answer("Saved.")
-        await q.edit_message_text("Minimum players and lobby time saved.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=_gm_cb(gid, "menu"))]]))
-        return
-
-    if action == "newhouse":
-        hp = await db.get_house_points_settings(gid)
-        toggle = "Disable House" if hp["enabled"] else "Enable House"
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(toggle, callback_data=_gm_cb(gid, "nh_toggle"))],
-            [InlineKeyboardButton("House Points", callback_data=_gm_cb(gid, "nh_points"))],
-            [InlineKeyboardButton("House Limit", callback_data=_gm_cb(gid, "nh_limit"))],
-            [InlineKeyboardButton("Back", callback_data=_gm_cb(gid, "menu"))],
-        ])
-        await q.answer()
-        await q.edit_message_text("<b>New House</b>\n\nSettings for house points in First to x and Highest Score modes.", parse_mode="HTML", reply_markup=kb)
-        return
-    if action == "nh_toggle":
-        hp = await db.get_house_points_settings(gid)
-        hp["enabled"] = not hp["enabled"]
-        await db.save_house_points_settings(gid, hp)
-        toggle = "Disable House" if hp["enabled"] else "Enable House"
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(toggle, callback_data=_gm_cb(gid, "nh_toggle"))],
-            [InlineKeyboardButton("House Points", callback_data=_gm_cb(gid, "nh_points"))],
-            [InlineKeyboardButton("House Limit", callback_data=_gm_cb(gid, "nh_limit"))],
-            [InlineKeyboardButton("Back", callback_data=_gm_cb(gid, "menu"))],
-        ])
-        await q.answer("Saved.")
-        await q.edit_message_text("<b>New House</b>\n\nSettings for house points in First to x and Highest Score modes.", parse_mode="HTML", reply_markup=kb)
-        return
-    if action == "nh_limit":
-        # Reuse existing house limit settings
-        settings = await db.get_house_settings(gid)
-        plays = settings.get("max_plays_per_day")
-        plays_label = "No limit" if plays is None else str(plays)
-        text = f"<b>House Limit</b>\n\nMax challenges per day: {plays_label}\n(Uses existing house settings)"
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("−", callback_data=_gm_cb(gid, "nhl_minus")),
-             InlineKeyboardButton("No limit", callback_data=_gm_cb(gid, "nhl_nolimit")),
-             InlineKeyboardButton("+", callback_data=_gm_cb(gid, "nhl_plus"))],
-            [InlineKeyboardButton("Back", callback_data=_gm_cb(gid, "newhouse"))],
-        ])
-        await q.answer()
-        await q.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
-        return
-    if action in ("nhl_minus", "nhl_plus", "nhl_nolimit"):
-        settings = await db.get_house_settings(gid)
-        plays = settings.get("max_plays_per_day")
-        if action == "nhl_nolimit":
-            plays = None
-        elif action == "nhl_plus":
-            plays = 1 if plays is None else min(20, (plays or 0) + 1)
-        elif action == "nhl_minus":
-            if plays is None:
-                plays = 10
-            else:
-                plays = max(1, plays - 1) if plays > 1 else None
-        await db.save_house_settings(gid, settings["house_enabled"], plays, settings.get("pvp_before_unlock", 1))
-        plays_label = "No limit" if plays is None else str(plays)
-        text = f"<b>House Limit</b>\n\nMax challenges per day: {plays_label}"
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("−", callback_data=_gm_cb(gid, "nhl_minus")),
-             InlineKeyboardButton("No limit", callback_data=_gm_cb(gid, "nhl_nolimit")),
-             InlineKeyboardButton("+", callback_data=_gm_cb(gid, "nhl_plus"))],
-            [InlineKeyboardButton("Back", callback_data=_gm_cb(gid, "newhouse"))],
-        ])
-        await q.answer("Saved.")
-        await q.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
-        return
-
-    if action == "nh_points":
-        hp = await db.get_house_points_settings(gid)
-        _GAME_MODE_DRAFT[(gid, q.from_user.id)] = {"mode": "housepoints", **hp}
-        text = _house_points_text(hp)
-        kb = _house_points_keyboard(gid, hp)
-        await q.answer()
-        await q.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
-        return
-    # House points controls will be handled below with more actions
-
-    if action.startswith("modejoker:"):
-        which = action.split(":", 1)[1]
-        cfg = await db.get_mode_joker(gid, which)
-        _GAME_MODE_DRAFT[(gid, q.from_user.id)] = {"mode": "modejoker", "which": which, "chance": cfg["chance"], "score": cfg["score"]}
-        text = (
-            "Set negative score and % chance that joker appears in a round.\n\n"
-            f"Chance: {cfg['chance']}% (0 = none)\n"
-            f"Score: {cfg['score']}"
-        )
-        # Number pad for chance + score +/- 
-        rows = []
-        for nums in (("1","2","3"),("4","5","6"),("7","8","9")):
-            rows.append([InlineKeyboardButton(n, callback_data=_gm_cb(gid, f"mjdigit:{n}")) for n in nums])
-        rows.append([
-            InlineKeyboardButton("⌫", callback_data=_gm_cb(gid, "mjdigit:del")),
-            InlineKeyboardButton("0", callback_data=_gm_cb(gid, "mjdigit:0")),
-        ])
-        rows.append([
-            InlineKeyboardButton("joker score −", callback_data=_gm_cb(gid, "mjscore-")),
-            InlineKeyboardButton("joker score +", callback_data=_gm_cb(gid, "mjscore+")),
-        ])
-        rows.append([
-            InlineKeyboardButton("Save", callback_data=_gm_cb(gid, "mjsave")),
-            InlineKeyboardButton("Back", callback_data=_gm_cb(gid, f"startnew:{which}" if False else which)),  # back to submenu
-        ])
-        await q.answer()
-        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows))
-        return
-
-    
-    # House points controls
-    if action.startswith("hp_"):
-        draft = _GAME_MODE_DRAFT.setdefault((gid, q.from_user.id), {"mode": "housepoints", **(await db.get_house_points_settings(gid))})
-        if "gaps" not in draft:
-            draft["gaps"] = [{"from":0,"to":0,"risk":0,"reward":0} for _ in range(4)]
-        act = action[3:]  # after hp_
-        if act == "dr+": draft["default_risk"] = min(50, draft.get("default_risk",0) + 1)
-        elif act == "dr-": draft["default_risk"] = max(0, draft.get("default_risk",0) - 1)
-        elif act == "dw+": draft["default_reward"] = min(50, draft.get("default_reward",0) + 1)
-        elif act == "dw-": draft["default_reward"] = max(0, draft.get("default_reward",0) - 1)
-        elif act == "gd+": draft["gap_disable_leader"] = min(50, draft.get("gap_disable_leader",0) + 1)
-        elif act == "gd-": draft["gap_disable_leader"] = max(0, draft.get("gap_disable_leader",0) - 1)
-        elif act.startswith("g") and len(act) > 3:
-            try:
-                gi = int(act[1])
-                field = act[2]
-                delta = 1 if act.endswith("+") else -1
-                g = draft["gaps"][gi]
-                if field == "f": g["from"] = max(0, g["from"] + delta)
-                elif field == "t": g["to"] = max(0, g["to"] + delta)
-                elif field == "r": g["risk"] = max(-50, min(0, g["risk"] + delta))  # risk negative or 0
-                elif field == "w": g["reward"] = max(0, min(50, g["reward"] + delta))
-            except Exception:
-                pass
-        text = _house_points_text(draft)
-        kb = _house_points_keyboard(gid, draft)
-        await q.answer()
-        await q.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
-        return
-    if action == "hpsave":
-        draft = _GAME_MODE_DRAFT.get((gid, q.from_user.id), {})
-        await db.save_house_points_settings(gid, draft)
-        await q.answer("Saved.")
-        await q.edit_message_text("House points config saved.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=_gm_cb(gid, "newhouse"))]]))
-        return
-
-    # Mode joker controls
-    if action.startswith("mjdigit:"):
-        digit = action.split(":",1)[1]
-        draft = _GAME_MODE_DRAFT.setdefault((gid, q.from_user.id), {"mode": "modejoker", "chance": 0, "score": -5})
-        chance = int(draft.get("chance", 0))
-        if digit == "del":
-            chance = chance // 10
-        else:
-            chance = min(100, chance * 10 + int(digit))
-        draft["chance"] = chance
-        which = draft.get("which", "first")
-        text = (
-            "Set negative score and % chance that joker appears in a round.\n\n"
-            f"Chance: {chance}% (0 = none)\n"
-            f"Score: {draft.get('score', -5)}"
-        )
-        rows = []
-        for nums in (("1","2","3"),("4","5","6"),("7","8","9")):
-            rows.append([InlineKeyboardButton(n, callback_data=_gm_cb(gid, f"mjdigit:{n}")) for n in nums])
-        rows.append([
-            InlineKeyboardButton("⌫", callback_data=_gm_cb(gid, "mjdigit:del")),
-            InlineKeyboardButton("0", callback_data=_gm_cb(gid, "mjdigit:0")),
-        ])
-        rows.append([
-            InlineKeyboardButton("joker score −", callback_data=_gm_cb(gid, "mjscore-")),
-            InlineKeyboardButton("joker score +", callback_data=_gm_cb(gid, "mjscore+")),
-        ])
-        rows.append([
-            InlineKeyboardButton("Save", callback_data=_gm_cb(gid, "mjsave")),
-            InlineKeyboardButton("Back", callback_data=_gm_cb(gid, which)),
-        ])
-        await q.answer()
-        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows))
-        return
-    if action in ("mjscore+", "mjscore-"):
-        draft = _GAME_MODE_DRAFT.setdefault((gid, q.from_user.id), {"mode": "modejoker", "chance": 0, "score": -5})
-        score = int(draft.get("score", -5))
-        score += 1 if action == "mjscore+" else -1
-        score = max(-30, min(-1, score))
-        draft["score"] = score
-        which = draft.get("which", "first")
-        text = (
-            "Set negative score and % chance that joker appears in a round.\n\n"
-            f"Chance: {draft.get('chance', 0)}% (0 = none)\n"
-            f"Score: {score}"
-        )
-        rows = []
-        for nums in (("1","2","3"),("4","5","6"),("7","8","9")):
-            rows.append([InlineKeyboardButton(n, callback_data=_gm_cb(gid, f"mjdigit:{n}")) for n in nums])
-        rows.append([
-            InlineKeyboardButton("⌫", callback_data=_gm_cb(gid, "mjdigit:del")),
-            InlineKeyboardButton("0", callback_data=_gm_cb(gid, "mjdigit:0")),
-        ])
-        rows.append([
-            InlineKeyboardButton("joker score −", callback_data=_gm_cb(gid, "mjscore-")),
-            InlineKeyboardButton("joker score +", callback_data=_gm_cb(gid, "mjscore+")),
-        ])
-        rows.append([
-            InlineKeyboardButton("Save", callback_data=_gm_cb(gid, "mjsave")),
-            InlineKeyboardButton("Back", callback_data=_gm_cb(gid, which)),
-        ])
-        await q.answer()
-        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows))
-        return
-    if action == "mjsave":
-        draft = _GAME_MODE_DRAFT.get((gid, q.from_user.id), {})
-        which = draft.get("which", "first")
-        await db.save_mode_joker(gid, which, draft.get("chance", 0), draft.get("score", -5))
-        await q.answer("Saved.")
-        await q.edit_message_text("Joker config saved.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=_gm_cb(gid, which))]]))
-        return
 
     if action == "jokerconfig":
         try:
@@ -2984,11 +2579,11 @@ async def _open_auto_lobby(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> 
         chat_id,
         await _lobby_text_for_chat(chat_id, [], game["flavor"]),
         parse_mode="HTML",
-        reply_markup=lobby_keyboard(game["id"], house_available=await _house_available_for_mode(chat_id), luck_mode=(await _effective_game_mode(chat_id)).get("mode") == "luck"),
+        reply_markup=lobby_keyboard(game["id"], house_available=await db.house_enabled(chat_id), luck_mode=(await _effective_game_mode(chat_id)).get("mode") == "luck"),
         disable_web_page_preview=True,
     )
     await db.set_message_id(game["id"], msg.message_id)
-    await _schedule_expire(context, game["id"], chat_id)
+    _schedule_expire(context, game["id"], chat_id)
 
 
 async def restore_jobs(application) -> None:
