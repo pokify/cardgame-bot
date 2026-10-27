@@ -430,49 +430,58 @@ async def _join_existing_lobby(update: Update, context: ContextTypes.DEFAULT_TYP
         mid = fresh["message_id"] if fresh else game["message_id"]
 
         if not ok and reason not in ("already_in",):
+            query = update.callback_query
             if reason == "full":
-                await message.reply_text("Lobby is full.")
+                msg = "Lobby is full."
             elif reason == "not_waiting":
-                who = f"@{user.username}" if user.username else (user.first_name or "player")
-                await message.reply_text(f"{who} game already in progress. Join next game.")
+                msg = "A game is already in progress. Join next game."
             else:
-                await message.reply_text("Can't join the lobby right now.")
+                msg = "Can't join the lobby right now."
+            if query is not None:
+                try:
+                    await query.answer(msg, show_alert=True)
+                except Exception:
+                    if message:
+                        await message.reply_text(msg)
+            elif message:
+                await message.reply_text(msg)
             return
 
-        # Refresh the lobby message so the new player appears.
-        if mid and ok:
-            try:
-                house_on = await db.house_enabled(chat.id)
-                text = await _lobby_text_for_chat(chat.id, players, game["flavor"])
-                markup = lobby_keyboard(
-                    game_id,
-                    house_available=house_on and len(players) <= 1,
-                    luck_mode=(await _effective_game_mode(chat.id)).get("mode") == "luck",
-                )
-                await context.bot.edit_message_text(
-                    chat_id=chat.id,
-                    message_id=mid,
-                    text=text,
-                    parse_mode="HTML",
-                    reply_markup=markup,
-                    disable_web_page_preview=True,
-                )
-            except Exception:
-                log.exception("Could not refresh lobby after play-button join")
-
-        # Jump to the lobby by replying to it (Telegram clients scroll to the replied message).
+        # Telegram cannot force a client to scroll to an older message.
+        # Bump the lobby to the bottom of the chat so it becomes the latest
+        # message the user sees after pressing Play.
         who = f"@{user.username}" if user.username else (user.first_name or "player")
-        if mid:
-            try:
-                await context.bot.send_message(
-                    chat.id,
-                    f"{who} joined the lobby.",
-                    reply_to_message_id=mid,
-                )
-            except Exception:
+        try:
+            house_on = await db.house_enabled(chat.id)
+            lobby_text = await _lobby_text_for_chat(chat.id, players, game["flavor"])
+            markup = lobby_keyboard(
+                game_id,
+                house_available=house_on and len(players) <= 1,
+                luck_mode=(await _effective_game_mode(chat.id)).get("mode") == "luck",
+            )
+            new_msg = await context.bot.send_message(
+                chat.id,
+                lobby_text,
+                parse_mode="HTML",
+                reply_markup=markup,
+                disable_web_page_preview=True,
+            )
+            await db.set_message_id(game_id, new_msg.message_id)
+            if mid and mid != new_msg.message_id:
+                await _delete_quietly(context.bot, chat.id, mid)
+        except Exception:
+            log.exception("Could not bump lobby after play-button join")
+            # Fallback: still tell the user they joined.
+            if message:
                 await message.reply_text(f"{who} joined the lobby.")
-        else:
-            await message.reply_text(f"{who} joined the lobby.")
+
+        # Alert popup when added via Play button (callback).
+        query = update.callback_query
+        if query is not None:
+            try:
+                await query.answer(f"{who} added to current game.", show_alert=True)
+            except Exception:
+                log.exception("Could not show join alert")
 
         # Start immediately if the lobby just filled.
         if ok and len(players) >= MAX_PLAYERS:
@@ -499,9 +508,29 @@ async def cards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await _join_existing_lobby(update, context, existing)
             return
         # Game has left the lobby (running or other active state).
-        who = f"@{user.username}" if user.username else (user.first_name or "player")
-        await message.reply_text(f"{who} game already in progress. Join next game.")
+        query = update.callback_query
+        if query is not None:
+            try:
+                await query.answer("A game is already in progress. Join next game.", show_alert=True)
+            except Exception:
+                log.exception("Could not show in-progress alert")
+                if message:
+                    await message.reply_text("A game is already in progress. Join next game.")
+        else:
+            # Direct /cards while a game is already running: delete the command
+            # and send no reply.
+            if message:
+                await _delete_quietly(context.bot, chat.id, message.message_id)
         return
+
+    # Plain answer for Play button when we are creating a fresh lobby
+    # (alerts are only used for join / already-in-progress).
+    query = update.callback_query
+    if query is not None:
+        try:
+            await query.answer()
+        except Exception:
+            pass
 
     standing = await db.caller_standing(chat.id, user.id)
     flavor = pick_flavor(standing)
@@ -1932,10 +1961,13 @@ async def playcards_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if ended:
             await query.answer("This Game has Ended. Use /cards to play current game", show_alert=True)
             return
-    await query.answer()
+    # Do not answer here — cards_cmd / _join_existing_lobby will answer
+    # with the appropriate alert (or a plain answer if no alert is needed).
     # Reuse the normal /cards path in the group where the button was pressed.
     if chat and chat.type in ("group", "supergroup"):
         await cards_cmd(update, context)
+    else:
+        await query.answer()
 
 
 async def lucklb_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
