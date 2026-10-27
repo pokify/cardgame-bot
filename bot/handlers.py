@@ -2268,7 +2268,7 @@ def _house_points_keyboard(gid: int, cfg: dict, boosts: list[dict]):
         [InlineKeyboardButton("−", callback_data=_gm_cb(gid,"hp:leader_disable_gap:-")),
          InlineKeyboardButton("OFF" if int(cfg["leader_disable_gap"]) < 1 else f"{cfg['leader_disable_gap']} points", callback_data=_gm_cb(gid,"hpnoop")),
          InlineKeyboardButton("+", callback_data=_gm_cb(gid,"hp:leader_disable_gap:+"))],
-        [InlineKeyboardButton("House r/r Gap Boost:", callback_data=_gm_cb(gid,"hpnoop"))],
+        [InlineKeyboardButton("House risk/reward Gap Boost:", callback_data=_gm_cb(gid,"hpnoop"))],
     ]
     for b in boosts:
         slot = int(b["slot"])
