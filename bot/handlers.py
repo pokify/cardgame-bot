@@ -2258,10 +2258,10 @@ def _house_points_text(cfg: dict, boosts: list[dict]) -> str:
 
 def _house_points_keyboard(gid: int, cfg: dict, boosts: list[dict]):
     rows = [
-        [InlineKeyboardButton("Default House r/r for all:", callback_data=_gm_cb(gid,"hpnoop"))],
+        [InlineKeyboardButton("Default House risk/reward for all:", callback_data=_gm_cb(gid,"hpnoop"))],
         [InlineKeyboardButton("−", callback_data=_gm_cb(gid,"hp:default_house_risk:-")),
          InlineKeyboardButton("+", callback_data=_gm_cb(gid,"hp:default_house_risk:+")),
-         InlineKeyboardButton("Risk/Reward:", callback_data=_gm_cb(gid,"hpnoop")),
+         InlineKeyboardButton("R/R", callback_data=_gm_cb(gid,"hpnoop")),
          InlineKeyboardButton("−", callback_data=_gm_cb(gid,"hp:default_house_reward:-")),
          InlineKeyboardButton("+", callback_data=_gm_cb(gid,"hp:default_house_reward:+"))],
         [InlineKeyboardButton("Gap disabling house for leader:", callback_data=_gm_cb(gid,"hpnoop"))],
