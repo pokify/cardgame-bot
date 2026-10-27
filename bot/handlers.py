@@ -413,6 +413,78 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await cards_cmd(update, context)
 
 
+async def _join_existing_lobby(update: Update, context: ContextTypes.DEFAULT_TYPE, game) -> None:
+    """Add the caller to an open lobby and jump the chat to the lobby message."""
+    chat = update.effective_chat
+    user = update.effective_user
+    message = update.effective_message
+    game_id = game["id"]
+    lock = await _lobby_lock(game_id)
+
+    async with lock:
+        ok, reason, _ = await db.add_player(
+            game_id, user.id, user.username, user.first_name
+        )
+        players = await db.list_players(game_id)
+        fresh = await db.get_game(game_id)
+        mid = fresh["message_id"] if fresh else game["message_id"]
+
+        if not ok and reason not in ("already_in",):
+            if reason == "full":
+                await message.reply_text("Lobby is full.")
+            elif reason == "not_waiting":
+                who = f"@{user.username}" if user.username else (user.first_name or "player")
+                await message.reply_text(f"{who} game already in progress. Join next game.")
+            else:
+                await message.reply_text("Can't join the lobby right now.")
+            return
+
+        # Refresh the lobby message so the new player appears.
+        if mid and ok:
+            try:
+                house_on = await db.house_enabled(chat.id)
+                text = await _lobby_text_for_chat(chat.id, players, game["flavor"])
+                markup = lobby_keyboard(
+                    game_id,
+                    house_available=house_on and len(players) <= 1,
+                    luck_mode=(await _effective_game_mode(chat.id)).get("mode") == "luck",
+                )
+                await context.bot.edit_message_text(
+                    chat_id=chat.id,
+                    message_id=mid,
+                    text=text,
+                    parse_mode="HTML",
+                    reply_markup=markup,
+                    disable_web_page_preview=True,
+                )
+            except Exception:
+                log.exception("Could not refresh lobby after play-button join")
+
+        # Jump to the lobby by replying to it (Telegram clients scroll to the replied message).
+        who = f"@{user.username}" if user.username else (user.first_name or "player")
+        if mid:
+            try:
+                await context.bot.send_message(
+                    chat.id,
+                    f"{who} joined the lobby.",
+                    reply_to_message_id=mid,
+                )
+            except Exception:
+                await message.reply_text(f"{who} joined the lobby.")
+        else:
+            await message.reply_text(f"{who} joined the lobby.")
+
+        # Start immediately if the lobby just filled.
+        if ok and len(players) >= MAX_PLAYERS:
+            # Release lock before starting the game.
+            pass
+        else:
+            return
+
+    if len(players) >= MAX_PLAYERS:
+        await _run_game(context, game_id, chat.id)
+
+
 async def cards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
     user = update.effective_user
@@ -423,7 +495,12 @@ async def cards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     existing = await db.active_game(chat.id)
     if existing:
-        await message.reply_text("A game is already in progress in this chat.")
+        if existing["status"] == "waiting":
+            await _join_existing_lobby(update, context, existing)
+            return
+        # Game has left the lobby (running or other active state).
+        who = f"@{user.username}" if user.username else (user.first_name or "player")
+        await message.reply_text(f"{who} game already in progress. Join next game.")
         return
 
     standing = await db.caller_standing(chat.id, user.id)
