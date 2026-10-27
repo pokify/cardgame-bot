@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from telegram import InputFile, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatMemberStatus
 from telegram.ext import ContextTypes
+from telegram.error import RetryAfter, TimedOut, NetworkError, TelegramError
 
 from bot import db
 from bot.config import AUTO_INTERVAL_SECONDS, GAME_CHAT_IDS, LOBBY_SECONDS, MAX_PLAYERS, MIN_PLAYERS, WIN_POINTS, CARDS
@@ -29,6 +30,40 @@ from bot.game import (
 from bot.images import render_deal
 
 log = logging.getLogger(__name__)
+
+
+async def _send_resilient(bot, method: str, *args, retries: int = 3, **kwargs):
+    """Send a Telegram message/photo with retries on rate-limit and transient errors.
+
+    Used for every post-lobby message so a user post (or rate limit) during
+    the dealing/outcome window cannot abort the game cycle.
+    """
+    last_exc = None
+    for attempt in range(retries):
+        try:
+            fn = getattr(bot, method)
+            return await fn(*args, **kwargs)
+        except RetryAfter as exc:
+            last_exc = exc
+            wait = float(getattr(exc, "retry_after", 5)) + 0.5
+            log.warning("Rate limited on %s (attempt %s/%s), waiting %.1fs", method, attempt + 1, retries, wait)
+            await asyncio.sleep(wait)
+        except (TimedOut, NetworkError) as exc:
+            last_exc = exc
+            wait = 1.5 * (attempt + 1)
+            log.warning("Transient error on %s (attempt %s/%s): %s", method, attempt + 1, retries, exc)
+            await asyncio.sleep(wait)
+        except TelegramError as exc:
+            # Non-retryable Telegram error (bad request, etc.) — log and give up on this send
+            log.exception("Non-retryable Telegram error on %s: %s", method, exc)
+            return None
+        except Exception as exc:
+            last_exc = exc
+            log.exception("Unexpected error on %s (attempt %s/%s)", method, attempt + 1, retries)
+            await asyncio.sleep(1.0)
+    log.error("Failed to %s after %s attempts: %s", method, retries, last_exc)
+    return None
+
 
 BUMP_SECONDS = 30
 RESET_TIMEOUT = 12
@@ -786,9 +821,9 @@ async def _run_house_challenge(
                             f"Fixed House points :\nRisk: -{house_risk} / Reward: +{house_reward}")
     else:
         announcement = f"{player_tag} has challenged\nthe house! <tg-emoji emoji-id=\"{house_emoji_id}\">⚔️</tg-emoji>"
-    await context.bot.send_message(chat_id, announcement, parse_mode="HTML", disable_web_page_preview=True)
+    await _send_resilient(context.bot, "send_message", chat_id, announcement, parse_mode="HTML", disable_web_page_preview=True)
 
-    await context.bot.send_message(chat_id, "Dealing...")
+    await _send_resilient(context.bot, "send_message", chat_id, "Dealing...")
     await asyncio.sleep(5)
 
     banned = await db.banned_cards(chat_id, "house")
@@ -796,7 +831,8 @@ async def _run_house_challenge(
     await db.record_deal_memory(chat_id, "house", [a["card_key"] for a in assignments])
 
     photo = render_deal(assignments)
-    await context.bot.send_photo(
+    await _send_resilient(
+        context.bot, "send_photo",
         chat_id,
         photo=InputFile(photo, filename="house_challenge.png"),
     )
@@ -845,7 +881,8 @@ async def _run_house_challenge(
     # operation can never leave /cards blocked by a stale running game.
     await db.set_status(game_id, "finished")
 
-    await context.bot.send_message(
+    await _send_resilient(
+        context.bot, "send_message",
         chat_id,
         result,
         parse_mode="HTML",
@@ -875,7 +912,8 @@ async def _run_house_challenge(
     await _schedule_game_bump(context, chat_id)
     await asyncio.sleep(5)
     lb_text = await _cards_lb(chat_id)
-    await context.bot.send_message(
+    await _send_resilient(
+        context.bot, "send_message",
         chat_id, lb_text, parse_mode="HTML",
         reply_markup=_leaderboard_markup(
             (await db.get_game_mode(chat_id) or {}).get("mode")
@@ -928,8 +966,8 @@ async def _run_tomochi_luck(context, game_id: int, chat_id: int, players: list[d
         started_text = "Game started!\n\nPlayers: " + ", ".join(
             mention(p.get('username'), p.get('first_name'), p.get('user_id')) for p in players
         )
-    await context.bot.send_message(chat_id, started_text, parse_mode="HTML")
-    await context.bot.send_message(chat_id, "Dealing...")
+    await _send_resilient(context.bot, "send_message", chat_id, started_text, parse_mode="HTML")
+    await _send_resilient(context.bot, "send_message", chat_id, "Dealing...")
     await asyncio.sleep(5)
 
     joker_cfg = await db.tomochi_luck_joker_settings(chat_id)
@@ -1009,7 +1047,7 @@ async def _run_tomochi_luck(context, game_id: int, chat_id: int, players: list[d
     for a in assignments:
         if a.get("card_key") == "joker":
             a["bottom_text"] = f"{penalty} Win"
-    await context.bot.send_photo(chat_id, photo=InputFile(render_deal(assignments), filename="deal.png"))
+    await _send_resilient(context.bot, "send_photo", chat_id, photo=InputFile(render_deal(assignments), filename="deal.png"))
     await db.save_deal(game_id, assignments, winner["user_id"])
 
     winner_id = 0 if int(winner["user_id"]) == -1 else int(winner["user_id"])
@@ -1050,11 +1088,14 @@ async def _run_tomochi_luck(context, game_id: int, chat_id: int, players: list[d
             f"Wins: {wins}\n"
             f"Win rate: {rate:g}%{joker_line}"
         )
-    await context.bot.send_message(chat_id, msg, parse_mode="HTML", reply_markup=_blank_outcome_markup())
+    await _send_resilient(context.bot, "send_message", chat_id, msg, parse_mode="HTML", reply_markup=_blank_outcome_markup())
 
     await asyncio.sleep(5)
-    await context.bot.send_message(chat_id, await _tomochi_luck_lb(chat_id), parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Play", callback_data="playcards")]]))
+    await _send_resilient(
+        context.bot, "send_message",
+        chat_id, await _tomochi_luck_lb(chat_id), parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Play", callback_data="playcards")]]),
+    )
     await _schedule_game_bump(context, chat_id)
 
 
@@ -1080,121 +1121,139 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
 
     current_mode = await db.get_game_mode(chat_id)
     if not current_mode or not (current_mode.get("active") or current_mode.get("pending")):
-        await _run_tomochi_luck(context, game_id, chat_id, players)
+        try:
+            await _run_tomochi_luck(context, game_id, chat_id, players)
+        finally:
+            # Tomochi Luck path is responsible for its own messages; we still
+            # guarantee the game cannot stay stuck in "running".
+            try:
+                await db.set_status(game_id, "finished")
+            except Exception:
+                log.exception("Could not finalize Tomochi Luck game %s", game_id)
         return
 
-    names = ", ".join(mention(p["username"], p["first_name"], p["user_id"]) for p in players)
-    pvp = await db.get_pvp_settings(chat_id)
-    base_points, join_bonus = pvp_base_bonus_for(pvp, len(players))
-    if join_bonus > 0:
-        points_line = f"Points to win: {base_points} (+{join_bonus})"
-    else:
-        points_line = f"Points to win: {base_points}"
-    await context.bot.send_message(
-        chat_id,
-        f"Game started! ({len(players)} players)\n\n{points_line}\n\nPlayers: {names}",
-        parse_mode="HTML",
-        disable_web_page_preview=True,
-    )
-
-    await context.bot.send_message(chat_id, "Dealing...")
-    await asyncio.sleep(5)
-
-    banned = await db.banned_cards(chat_id, "pvp2") if len(players) == 2 else []
-    # 2-player Joker cooldown: after a Joker, next 2 deals have only 5% chance (overrides normal equal-pool odds)
-    if len(players) == 2:
-        cooldown = await db.get_joker_cooldown(chat_id)
-        if cooldown > 0:
-            # Force joker out of the normal pool and decide inclusion with 5% roll
-            banned = list(set(banned) | {"joker"})
-            include_joker = random.random() * 100 < 5
+    try:
+        names = ", ".join(mention(p["username"], p["first_name"], p["user_id"]) for p in players)
+        pvp = await db.get_pvp_settings(chat_id)
+        base_points, join_bonus = pvp_base_bonus_for(pvp, len(players))
+        if join_bonus > 0:
+            points_line = f"Points to win: {base_points} (+{join_bonus})"
         else:
-            include_joker = None  # let deal() decide normally
-    else:
-        include_joker = None
+            points_line = f"Points to win: {base_points}"
+        await _send_resilient(
+            context.bot, "send_message",
+            chat_id,
+            f"Game started! ({len(players)} players)\n\n{points_line}\n\nPlayers: {names}",
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
 
-    if current_mode and current_mode.get("mode") in ("first", "highest"):
-        mode_joker = await db.get_mode_joker_settings(chat_id, current_mode["mode"])
-        include_joker = random.random() * 100 < int(mode_joker["chance"])
-        if not include_joker:
-            banned = list(set(banned) | {"joker"})
+        await _send_resilient(context.bot, "send_message", chat_id, "Dealing...")
+        await asyncio.sleep(5)
 
-    if include_joker is True:
-        # Build assignments manually with forced joker chance
-        from bot.game import deal as _deal
-        pool = [k for k in CARDS if k != "joker" and k not in banned]
-        if len(pool) < len(players) - 1:
-            pool = [k for k in CARDS if k != "joker"]
-        normal_keys = random.sample(pool, len(players) - 1)
-        keys = normal_keys + ["joker"]
-        random.shuffle(keys)
-        assignments = []
-        for player, key in zip(players, keys):
-            face = CARDS[key]["score"]
-            assignments.append({
-                "user_id": player["user_id"],
-                "username": player["username"],
-                "first_name": player["first_name"],
-                "card_key": key,
-                "score": face,
-                "display_score": -5 if key == "joker" else face,
-                "label": CARDS[key]["label"],
-            })
-        joker = next((a for a in assignments if a["card_key"] == "joker"), None)
-        contenders = [a for a in assignments if a["card_key"] != "joker"]
-        winner = max(contenders, key=lambda a: a["score"])
-    else:
-        assignments, winner, joker = deal(players, banned)
+        banned = await db.banned_cards(chat_id, "pvp2") if len(players) == 2 else []
+        # 2-player Joker cooldown: after a Joker, next 2 deals have only 5% chance (overrides normal equal-pool odds)
+        if len(players) == 2:
+            cooldown = await db.get_joker_cooldown(chat_id)
+            if cooldown > 0:
+                # Force joker out of the normal pool and decide inclusion with 5% roll
+                banned = list(set(banned) | {"joker"})
+                include_joker = random.random() * 100 < 5
+            else:
+                include_joker = None  # let deal() decide normally
+        else:
+            include_joker = None
 
-    if current_mode and current_mode.get("mode") in ("first", "highest"):
-        joker_points = int((await db.get_mode_joker_settings(chat_id, current_mode["mode"]))["penalty"])
-    else:
-        joker_points = int(pvp["joker_points"])
-    if joker:
-        joker["display_score"] = joker_points
-    if len(players) == 2:
-        await db.record_deal_memory(chat_id, "pvp2", [a["card_key"] for a in assignments])
-        joker_appeared = joker is not None
-        await db.update_joker_cooldown(chat_id, joker_appeared)
-    photo = render_deal(assignments)
-    await context.bot.send_photo(chat_id, photo=InputFile(photo, filename="deal.png"))
+        if current_mode and current_mode.get("mode") in ("first", "highest"):
+            mode_joker = await db.get_mode_joker_settings(chat_id, current_mode["mode"])
+            include_joker = random.random() * 100 < int(mode_joker["chance"])
+            if not include_joker:
+                banned = list(set(banned) | {"joker"})
 
-    winner_tag = mention(winner["username"], winner["first_name"], winner["user_id"])
-    points = db.pvp_points_for(pvp, len(players))
-    result = f"{winner_tag} wins! {points} points!"
-    if joker:
-        joker_tag = mention(joker["username"], joker["first_name"], joker["user_id"])
-        sign = "+" if joker_points > 0 else ""
-        result += f"\n\n{joker_tag} Joker pulled {sign}{joker_points} points \U0001F62D"
-    await context.bot.send_message(
-        chat_id,
-        result,
-        parse_mode="HTML",
-        reply_markup=_blank_outcome_markup(),
-        disable_web_page_preview=True,
-    )
+        if include_joker is True:
+            # Build assignments manually with forced joker chance
+            pool = [k for k in CARDS if k != "joker" and k not in banned]
+            if len(pool) < len(players) - 1:
+                pool = [k for k in CARDS if k != "joker"]
+            normal_keys = random.sample(pool, len(players) - 1)
+            keys = normal_keys + ["joker"]
+            random.shuffle(keys)
+            assignments = []
+            for player, key in zip(players, keys):
+                face = CARDS[key]["score"]
+                assignments.append({
+                    "user_id": player["user_id"],
+                    "username": player["username"],
+                    "first_name": player["first_name"],
+                    "card_key": key,
+                    "score": face,
+                    "display_score": -5 if key == "joker" else face,
+                    "label": CARDS[key]["label"],
+                })
+            joker = next((a for a in assignments if a["card_key"] == "joker"), None)
+            contenders = [a for a in assignments if a["card_key"] != "joker"]
+            winner = max(contenders, key=lambda a: a["score"])
+        else:
+            assignments, winner, joker = deal(players, banned)
 
-    await db.save_deal(game_id, assignments, winner["user_id"])
-    await db.bump_stats(
-        chat_id,
-        players,
-        winner["user_id"],
-        points,
-        joker["user_id"] if joker else None,
-        joker_points,
-    )
-    await _record_mode_after_cards(context, chat_id, players)
-    await _schedule_game_bump(context, chat_id)
-    await asyncio.sleep(5)
-    lb_text = await _cards_lb(chat_id)
-    await context.bot.send_message(
-        chat_id, lb_text, parse_mode="HTML",
-        reply_markup=_leaderboard_markup(
-            (await db.get_game_mode(chat_id) or {}).get("mode")
-            if (await db.get_game_mode(chat_id) or {}).get("active") else None
-        ),
-        disable_web_page_preview=True,
-    )
+        if current_mode and current_mode.get("mode") in ("first", "highest"):
+            joker_points = int((await db.get_mode_joker_settings(chat_id, current_mode["mode"]))["penalty"])
+        else:
+            joker_points = int(pvp["joker_points"])
+        if joker:
+            joker["display_score"] = joker_points
+        if len(players) == 2:
+            await db.record_deal_memory(chat_id, "pvp2", [a["card_key"] for a in assignments])
+            joker_appeared = joker is not None
+            await db.update_joker_cooldown(chat_id, joker_appeared)
+        photo = render_deal(assignments)
+        await _send_resilient(context.bot, "send_photo", chat_id, photo=InputFile(photo, filename="deal.png"))
+
+        winner_tag = mention(winner["username"], winner["first_name"], winner["user_id"])
+        points = db.pvp_points_for(pvp, len(players))
+        result = f"{winner_tag} wins! {points} points!"
+        if joker:
+            joker_tag = mention(joker["username"], joker["first_name"], joker["user_id"])
+            sign = "+" if joker_points > 0 else ""
+            result += f"\n\n{joker_tag} Joker pulled {sign}{joker_points} points \U0001F62D"
+        await _send_resilient(
+            context.bot, "send_message",
+            chat_id,
+            result,
+            parse_mode="HTML",
+            reply_markup=_blank_outcome_markup(),
+            disable_web_page_preview=True,
+        )
+
+        await db.save_deal(game_id, assignments, winner["user_id"])
+        await db.bump_stats(
+            chat_id,
+            players,
+            winner["user_id"],
+            points,
+            joker["user_id"] if joker else None,
+            joker_points,
+        )
+        await _record_mode_after_cards(context, chat_id, players)
+        await _schedule_game_bump(context, chat_id)
+        await asyncio.sleep(5)
+        lb_text = await _cards_lb(chat_id)
+        await _send_resilient(
+            context.bot, "send_message",
+            chat_id, lb_text, parse_mode="HTML",
+            reply_markup=_leaderboard_markup(
+                (await db.get_game_mode(chat_id) or {}).get("mode")
+                if (await db.get_game_mode(chat_id) or {}).get("active") else None
+            ),
+            disable_web_page_preview=True,
+        )
+    finally:
+        # Always clear the running state so a user message or rate-limit
+        # during any phase cannot leave the chat permanently stuck.
+        try:
+            await db.set_status(game_id, "finished")
+        except Exception:
+            log.exception("Could not finalize game %s", game_id)
 
 
 async def cancelcards_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
