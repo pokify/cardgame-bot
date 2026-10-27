@@ -2249,7 +2249,7 @@ def _house2_keyboard(gid: int, enabled: bool):
 
 
 def _house_points_text(cfg: dict, boosts: list[dict]) -> str:
-    rows = [f"Pts Gap {b['gap_from']}-{b['gap_to']}: risk/rwd -{b['risk']}/{b['reward']}" for b in boosts]
+    rows = [f"Points Gap {b['gap_from']}-{b['gap_to']}: risk/rwd -{b['risk']}/{b['reward']}" for b in boosts]
     return ("<b>Configure house challenge risk and reward points for all players and house boost.</b>\n\n"
             f"Default House Risk/Reward: -{cfg['default_house_risk']}/+{cfg['default_house_reward']}\n\n"
             f"Temporarily disable house for leader if ahead by: {'OFF' if int(cfg['leader_disable_gap']) < 1 else str(cfg['leader_disable_gap']) + ' points'}\n\n"
