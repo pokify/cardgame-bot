@@ -2252,7 +2252,7 @@ def _house_points_text(cfg: dict, boosts: list[dict]) -> str:
     rows = [f"Pts Gap {b['gap_from']}-{b['gap_to']}: risk/rwd -{b['risk']}/{b['reward']}" for b in boosts]
     return ("<b>Configure house challenge risk and reward points for all players and house boost.</b>\n\n"
             f"Default House Risk/Reward: -{cfg['default_house_risk']}/+{cfg['default_house_reward']}\n\n"
-            f"Temporarily disable house for leader if ahead by: {cfg['leader_disable_gap']} points\n\n"
+            f"Temporarily disable house for leader if ahead by: {'OFF' if int(cfg['leader_disable_gap']) < 1 else str(cfg['leader_disable_gap']) + ' points'}\n\n"
             "House R/R gap boost for players behind leader. Triggers in-game:\n\n" + "\n".join(rows))
 
 
@@ -2266,30 +2266,39 @@ def _house_points_keyboard(gid: int, cfg: dict, boosts: list[dict]):
          InlineKeyboardButton("+", callback_data=_gm_cb(gid,"hp:default_house_reward:+"))],
         [InlineKeyboardButton("Gap disabling house for leader:", callback_data=_gm_cb(gid,"hpnoop"))],
         [InlineKeyboardButton("−", callback_data=_gm_cb(gid,"hp:leader_disable_gap:-")),
-         InlineKeyboardButton(f"{cfg['leader_disable_gap']} points", callback_data=_gm_cb(gid,"hpnoop")),
+         InlineKeyboardButton("OFF" if int(cfg["leader_disable_gap"]) < 1 else f"{cfg['leader_disable_gap']} points", callback_data=_gm_cb(gid,"hpnoop")),
          InlineKeyboardButton("+", callback_data=_gm_cb(gid,"hp:leader_disable_gap:+"))],
         [InlineKeyboardButton("House r/r Gap Boost:", callback_data=_gm_cb(gid,"hpnoop"))],
     ]
     for b in boosts:
-        slot=int(b["slot"])
-        # Two-row layout per boost, matching the supplied diagram.
-        rows.append([
-            InlineKeyboardButton("Gap:",callback_data=_gm_cb(gid,"hpnoop")),
-            InlineKeyboardButton("−",callback_data=_gm_cb(gid,f"hp:{slot}:gap_from:-")),
-            InlineKeyboardButton("+",callback_data=_gm_cb(gid,f"hp:{slot}:gap_from:+")),
-            InlineKeyboardButton("to",callback_data=_gm_cb(gid,"hpnoop")),
-            InlineKeyboardButton("−",callback_data=_gm_cb(gid,f"hp:{slot}:gap_to:-")),
-            InlineKeyboardButton("+",callback_data=_gm_cb(gid,f"hp:{slot}:gap_to:+")),
-        ])
-        rows.append([
-            InlineKeyboardButton("−",callback_data=_gm_cb(gid,f"hp:{slot}:risk:-")),
-            InlineKeyboardButton("+",callback_data=_gm_cb(gid,f"hp:{slot}:risk:+")),
-            InlineKeyboardButton("R/R",callback_data=_gm_cb(gid,"hpnoop")),
-            InlineKeyboardButton("−",callback_data=_gm_cb(gid,f"hp:{slot}:reward:-")),
-            InlineKeyboardButton("+",callback_data=_gm_cb(gid,f"hp:{slot}:reward:+")),
-        ])
-    rows += [[InlineKeyboardButton("Save",callback_data=_gm_cb(gid,"housepointssave"))],
-             [InlineKeyboardButton("Back",callback_data=_gm_cb(gid,"house2"))]]
+        slot = int(b["slot"])
+        label = f"Gap: {b['gap_from']} to {b['gap_to']} · R/R: -{b['risk']} / +{b['reward']}"
+        rows.append([InlineKeyboardButton(label, callback_data=_gm_cb(gid, f"hpedit:{slot}"))])
+    rows += [
+        [InlineKeyboardButton("Save", callback_data=_gm_cb(gid,"housepointssave"))],
+        [InlineKeyboardButton("Cancel (discard changes)", callback_data=_gm_cb(gid,"housepointscancel"))],
+        [InlineKeyboardButton("Back", callback_data=_gm_cb(gid,"house2"))],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def _house_boost_edit_keyboard(gid: int, boost: dict):
+    slot = int(boost["slot"])
+    rows = [
+        [InlineKeyboardButton(f"Gap start: {boost['gap_from']}", callback_data=_gm_cb(gid,"hpnoop"))],
+        [InlineKeyboardButton("−", callback_data=_gm_cb(gid,f"hpedit:{slot}:gap_from:-")),
+         InlineKeyboardButton("+", callback_data=_gm_cb(gid,f"hpedit:{slot}:gap_from:+"))],
+        [InlineKeyboardButton(f"Gap end: {boost['gap_to']}", callback_data=_gm_cb(gid,"hpnoop"))],
+        [InlineKeyboardButton("−", callback_data=_gm_cb(gid,f"hpedit:{slot}:gap_to:-")),
+         InlineKeyboardButton("+", callback_data=_gm_cb(gid,f"hpedit:{slot}:gap_to:+"))],
+        [InlineKeyboardButton(f"Risk: -{boost['risk']}", callback_data=_gm_cb(gid,"hpnoop"))],
+        [InlineKeyboardButton("−", callback_data=_gm_cb(gid,f"hpedit:{slot}:risk:-")),
+         InlineKeyboardButton("+", callback_data=_gm_cb(gid,f"hpedit:{slot}:risk:+"))],
+        [InlineKeyboardButton(f"Reward: +{boost['reward']}", callback_data=_gm_cb(gid,"hpnoop"))],
+        [InlineKeyboardButton("−", callback_data=_gm_cb(gid,f"hpedit:{slot}:reward:-")),
+         InlineKeyboardButton("+", callback_data=_gm_cb(gid,f"hpedit:{slot}:reward:+"))],
+        [InlineKeyboardButton("Back to House Points", callback_data=_gm_cb(gid,f"hpedit:{slot}:back"))],
+    ]
     return InlineKeyboardMarkup(rows)
 
 
@@ -2366,6 +2375,55 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
         _GAME_MODE_DRAFT[(gid,q.from_user.id)] = {"mode":"housepoints","cfg":cfg,"boosts":boosts}
         await q.answer()
         await q.edit_message_text(_house_points_text(cfg,boosts),parse_mode="HTML",reply_markup=_house_points_keyboard(gid,cfg,boosts))
+        return
+    if action.startswith("hpedit:"):
+        bits = action.split(":")
+        draft = _GAME_MODE_DRAFT.setdefault(
+            (gid, q.from_user.id),
+            {"mode": "housepoints", "cfg": await db.get_gamemode_config(gid),
+             "boosts": await db.get_house_gap_boosts(gid)}
+        )
+        try:
+            slot = int(bits[1])
+            boost = next(b for b in draft["boosts"] if int(b["slot"]) == slot)
+        except (ValueError, IndexError, StopIteration):
+            await q.answer("That Gap Boost row is unavailable.", show_alert=True)
+            return
+        if len(bits) == 2:
+            await q.answer()
+            await q.edit_message_text(
+                f"<b>House R/R Gap Boost {slot}</b>\\n\\nSet the gap range and risk/reward for this boost.",
+                parse_mode="HTML", reply_markup=_house_boost_edit_keyboard(gid, boost)
+            )
+            return
+        sub = bits[2]
+        if sub == "back":
+            await q.answer()
+            await q.edit_message_text(
+                _house_points_text(draft["cfg"], draft["boosts"]), parse_mode="HTML",
+                reply_markup=_house_points_keyboard(gid, draft["cfg"], draft["boosts"])
+            )
+            return
+        if len(bits) == 4 and sub in ("gap_from", "gap_to", "risk", "reward"):
+            step = 1 if bits[3] == "+" else -1
+            boost[sub] = max(0, min(100, int(boost.get(sub, 0)) + step))
+            await q.answer()
+            await q.edit_message_text(
+                f"<b>House R/R Gap Boost {slot}</b>\\n\\nSet the gap range and risk/reward for this boost.",
+                parse_mode="HTML", reply_markup=_house_boost_edit_keyboard(gid, boost)
+            )
+            return
+        await q.answer()
+        return
+    if action == "housepointscancel":
+        _GAME_MODE_DRAFT.pop((gid, q.from_user.id), None)
+        cfg = await db.get_gamemode_config(gid)
+        boosts = await db.get_house_gap_boosts(gid)
+        await q.answer("Unsaved changes discarded.")
+        await q.edit_message_text(
+            _house_points_text(cfg, boosts), parse_mode="HTML",
+            reply_markup=_house_points_keyboard(gid, cfg, boosts)
+        )
         return
     if action.startswith("hp:"):
         cfg = _GAME_MODE_DRAFT.setdefault((gid,q.from_user.id),{"mode":"housepoints","cfg":await db.get_gamemode_config(gid),"boosts":await db.get_house_gap_boosts(gid)})
