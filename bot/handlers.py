@@ -182,6 +182,11 @@ async def _lobby_text_for_chat(chat_id: int, players: list, flavor: str | None) 
     return lobby_text(players, flavor, settings)
 
 
+async def _render_deal_for_chat(chat_id: int, assignments: list[dict]):
+    theme = await db.get_table_colour(chat_id)
+    return render_deal(assignments, theme=theme)
+
+
 async def _schedule_expire(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: int) -> None:
     jq = context.job_queue
     name = f"expire:{game_id}"
@@ -748,6 +753,33 @@ async def _house_cooldown_text(user, used: int) -> str:
     )
 
 
+async def _house_confirmation_alert(chat_id: int, user, max_plays, pvp, remaining) -> str:
+    mode = await db.get_game_mode(chat_id)
+    if mode and (mode.get("active") or mode.get("pending")) and mode.get("mode") in ("first", "highest"):
+        cfg = await db.get_gamemode_config(chat_id)
+        risk = int(cfg.get("default_house_risk") or 0)
+        reward = int(cfg.get("default_house_reward") or 0)
+        standings = await db.leaderboard(chat_id, 10000)
+        scores = {int(r["user_id"]): int(r.get("score") or 0) for r in standings}
+        own_score = scores.get(int(user.id), 0)
+        leader_score = max(scores.values(), default=own_score)
+        gap = max(0, leader_score - own_score)
+        for boost in await db.get_house_gap_boosts(chat_id):
+            start, end = int(boost.get("gap_from") or 0), int(boost.get("gap_to") or 0)
+            br, bw = int(boost.get("risk") or 0), int(boost.get("reward") or 0)
+            if end > 0 and start > 0 and start <= gap <= end and (br > 0 or bw > 0):
+                return (
+                    f"House gap boost offer:\n"
+                    f"-{br} risk/reward +{bw} win\n"
+                    "Click Challenge House to continue."
+                )
+        return (
+            f"Fixed House points: -{risk} loss/+{reward} win\n"
+            "Click Challenge House to continue."
+        )
+    return _house_confirm_text(user, max_plays, pvp, remaining)
+
+
 async def house_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """First click shows a private alert; second click by that same user starts."""
     query = update.callback_query
@@ -819,6 +851,9 @@ async def house_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     max_plays = settings["max_plays_per_day"]
     pvp = await db.get_pvp_settings(group_chat.id)
     rr_on = db.house_rr_active(pvp)
+    if active_mode and (active_mode.get("active") or active_mode.get("pending")) and active_mode.get("mode") in ("first", "highest"):
+        # First/Highest modes always show the configured fixed/gap House offer confirmation.
+        rr_on = True
 
     if max_plays is None and not rr_on:
         _house_confirmed_clicks.pop((game_id, user.id), None)
@@ -845,7 +880,7 @@ async def house_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if confirmed_at is None or now_ts - confirmed_at > HOUSE_CONFIRM_TIMEOUT:
         _house_confirmed_clicks[key] = now_ts
         await query.answer(
-            _house_confirm_text(user, max_plays, pvp, remaining),
+            await _house_confirmation_alert(group_chat.id, user, max_plays, pvp, remaining),
             show_alert=True,
         )
         return
@@ -936,7 +971,7 @@ async def _run_house_challenge(
     assignments, winner, _house = deal_house(player, banned)
     await db.record_deal_memory(chat_id, "house", [a["card_key"] for a in assignments])
 
-    photo = render_deal(assignments)
+    photo = await _render_deal_for_chat(chat_id, assignments)
     await _send_resilient(
         context.bot, "send_photo",
         chat_id,
@@ -1153,7 +1188,7 @@ async def _run_tomochi_luck(context, game_id: int, chat_id: int, players: list[d
     for a in assignments:
         if a.get("card_key") == "joker":
             a["bottom_text"] = f"{penalty} Win"
-    await _send_resilient(context.bot, "send_photo", chat_id, photo=InputFile(render_deal(assignments), filename="deal.png"))
+    await _send_resilient(context.bot, "send_photo", chat_id, photo=InputFile(await _render_deal_for_chat(chat_id, assignments), filename="deal.png"))
     await db.save_deal(game_id, assignments, winner["user_id"])
 
     winner_id = 0 if int(winner["user_id"]) == -1 else int(winner["user_id"])
@@ -1312,7 +1347,7 @@ async def _run_game(context: ContextTypes.DEFAULT_TYPE, game_id: int, chat_id: i
             await db.record_deal_memory(chat_id, "pvp2", [a["card_key"] for a in assignments])
             joker_appeared = joker is not None
             await db.update_joker_cooldown(chat_id, joker_appeared)
-        photo = render_deal(assignments)
+        photo = await _render_deal_for_chat(chat_id, assignments)
         await _send_resilient(context.bot, "send_photo", chat_id, photo=InputFile(photo, filename="deal.png"))
 
         winner_tag = mention(winner["username"], winner["first_name"], winner["user_id"])
@@ -1627,6 +1662,22 @@ def _gm_cb(group_id:int, action:str)->str:
     return f"gm:{group_id}:{action}"
 
 
+def _table_colour_keyboard(group_id: int, theme: str):
+    choices = [
+        ("White background with black text", "white"),
+        ("Green background with white text", "green"),
+        ("Dark green background with white text", "dark_green"),
+    ]
+    rows = [[InlineKeyboardButton(("✓ " if theme == key else "") + label,
+                                  callback_data=_gm_cb(group_id, f"tablecolour:{key}"))]
+            for label, key in choices]
+    rows.extend([
+        [InlineKeyboardButton("Save", callback_data=_gm_cb(group_id, "tablecolour:save"))],
+        [InlineKeyboardButton("Back", callback_data=_gm_cb(group_id, "menu"))],
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
 def _gm_menu_text(mode):
     # A saved/pending mode is treated as the current game for the Game Mode
     # menu. The only "Saved..." confirmation is the message shown immediately
@@ -1647,7 +1698,8 @@ def _gm_menu_keyboard(group_id:int,mode):
           [InlineKeyboardButton("House Settings 2",callback_data=_gm_cb(group_id,"house2"))],
           [InlineKeyboardButton("Game Bump Alert",callback_data=_gm_cb(group_id,"bump"))],
           [InlineKeyboardButton("config minimum players",callback_data=_gm_cb(group_id,"minplayers"))],
-          [InlineKeyboardButton("lb rank limit",callback_data=_gm_cb(group_id,"lblimit"))]]
+          [InlineKeyboardButton("lb rank limit",callback_data=_gm_cb(group_id,"lblimit"))],
+          [InlineKeyboardButton("Config Table Colour",callback_data=_gm_cb(group_id,"tablecolour"))]]
     return InlineKeyboardMarkup(rows)
 
 
@@ -1988,6 +2040,7 @@ async def points_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     pvp = await db.get_pvp_settings(chat.id)
     house = await db.get_house_settings(chat.id)
+    mode = await db.get_game_mode(chat.id)
 
     def join_bonus(n: int) -> int:
         base = int(pvp.get(f"base_{n}") or 0)
@@ -2000,19 +2053,38 @@ async def points_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"2P {int(pvp.get('base_2') or 0)} + {join_bonus(2)} join bonus",
         f"3P {int(pvp.get('base_3') or 0)} + {join_bonus(3)} join bonus",
         f"4P {int(pvp.get('base_4') or 0)} + {join_bonus(4)} join bonus",
-        "",
-        f"House challenge: lose -{int(pvp.get('house_risk') or 0)}/win {int(pvp.get('house_reward') or 0)}",
-        "",
     ]
+
+    if mode and (mode.get("active") or mode.get("pending")) and mode.get("mode") in ("first", "highest"):
+        cfg = await db.get_gamemode_config(chat.id)
+        risk = int(cfg.get("default_house_risk") or 0)
+        reward = int(cfg.get("default_house_reward") or 0)
+        lines.extend(["", f"Fixed House points: risk -{risk}/reward +{reward}"])
+        boosts = await db.get_house_gap_boosts(chat.id)
+        active_boosts = [
+            b for b in boosts
+            if int(b.get("gap_from") or 0) > 0
+            and int(b.get("gap_to") or 0) >= int(b.get("gap_from") or 0)
+            and (int(b.get("risk") or 0) > 0 or int(b.get("reward") or 0) > 0)
+        ]
+        if active_boosts:
+            lowest = min(int(b["gap_from"]) for b in active_boosts)
+            lines.extend([
+                "",
+                f"House will offer different risk/reward points for players significantly behind leader by {lowest}+ points."
+            ])
 
     max_plays = house.get("max_plays_per_day")
     if max_plays is None:
-        lines.append("House limit per player: no limit")
+        lines.extend(["", "House daily limit per player: no limit"])
     else:
-        lines.append(f"House limit per player: {int(max_plays)} a day")
+        lines.extend(["", f"House daily limit per player: {int(max_plays)}"])
 
-    await query.answer("\n".join(lines), show_alert=True)
-
+    full_text = "\n".join(lines)
+    # Telegram callback alerts are limited to 200 characters.
+    await query.answer(full_text[:200], show_alert=True)
+    if len(full_text) > 200:
+        await context.bot.send_message(chat.id, full_text)
 
 async def showlb_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -2663,6 +2735,39 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
         await q.answer()
         await q.edit_message_text(_joker_mode_text(cfg),reply_markup=_joker_mode_keyboard(gid,which,cfg))
         return
+    if action == "tablecolour":
+        theme = await db.get_table_colour(gid)
+        _GAME_MODE_DRAFT[(gid, q.from_user.id)] = {"mode": "tablecolour", "theme": theme}
+        await q.answer()
+        labels = {"white": ("White", "Black"), "green": ("Green", "White"), "dark_green": ("Dark green", "White")}
+        bg, fg = labels.get(theme, labels["white"])
+        await q.edit_message_text(
+            f"Config background table colour of cards and text scores text\n\nBackground: {bg}\nText: {fg}",
+            reply_markup=_table_colour_keyboard(gid, theme),
+        )
+        return
+    if action.startswith("tablecolour:"):
+        sub = action.split(":", 1)[1]
+        draft = _GAME_MODE_DRAFT.setdefault(
+            (gid, q.from_user.id),
+            {"mode": "tablecolour", "theme": await db.get_table_colour(gid)}
+        )
+        if sub in ("white", "green", "dark_green"):
+            draft["theme"] = sub
+            labels = {"white": ("White", "Black"), "green": ("Green", "White"), "dark_green": ("Dark green", "White")}
+            bg, fg = labels[sub]
+            await q.answer()
+            await q.edit_message_text(
+            f"Config background table colour of cards and text scores text\n\nBackground: {bg}\nText: {fg}",
+                reply_markup=_table_colour_keyboard(gid, sub),
+            )
+            return
+        if sub == "save":
+            await db.set_table_colour(gid, draft.get("theme", "white"))
+            _GAME_MODE_DRAFT.pop((gid, q.from_user.id), None)
+            await q.answer("Saved.")
+            await q.edit_message_text("Table colour settings saved.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=_gm_cb(gid, "menu"))]]))
+            return
     if action == "lblimit":
         value = await db.get_leaderboard_rank_limit(gid)
         _GAME_MODE_DRAFT[(gid, q.from_user.id)] = {"mode": "lblimit", "value": value}

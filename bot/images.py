@@ -154,7 +154,7 @@ def _scale_card(raw: Image.Image) -> Image.Image:
     return raw.resize((w, h), Image.Resampling.LANCZOS)
 
 
-def render_deal(players: list[dict]) -> BytesIO:
+def render_deal(players: list[dict], theme: str = "white") -> BytesIO:
     """Render the existing deal as a compact Telegram-friendly composite.
 
     players: {username, first_name, user_id, card_key, score}
@@ -189,7 +189,13 @@ def render_deal(players: list[dict]) -> BytesIO:
     )
     total_h = pad_y * 2 + name_area_h + card_h + score_area_h
 
-    canvas = Image.new("RGB", (total_w, total_h), (248, 248, 248))
+    themes = {
+        "white": ((248, 248, 248), (20, 20, 20)),
+        "green": ((5, 219, 26), (255, 255, 255)),
+        "dark_green": ((53, 156, 37), (255, 255, 255)),
+    }
+    background_colour, text_colour = themes.get(theme, themes["white"])
+    canvas = Image.new("RGB", (total_w, total_h), background_colour)
     draw = ImageDraw.Draw(canvas)
 
     x = pad_x
@@ -212,7 +218,7 @@ def render_deal(players: list[dict]) -> BytesIO:
         draw.text(
             (x + im.width / 2, name_center_y),
             name,
-            fill=(20, 20, 20),
+            fill=text_colour,
             font=name_font,
             anchor="mm",
         )
@@ -239,7 +245,7 @@ def render_deal(players: list[dict]) -> BytesIO:
             draw.text(
                 (x + (im.width - bottom_w) / 2, bottom_top - bottom_bbox[1]),
                 bottom,
-                fill=(20, 20, 20),
+                fill=text_colour,
                 font=bottom_font,
             )
         else:
@@ -268,7 +274,7 @@ def render_deal(players: list[dict]) -> BytesIO:
             draw.text(
                 (x + (im.width - label_w) / 2, score_top - score_label_bbox[1]),
                 score_label,
-                fill=(20, 20, 20),
+                fill=text_colour,
                 font=score_label_font,
             )
 
@@ -276,7 +282,7 @@ def render_deal(players: list[dict]) -> BytesIO:
             draw.text(
                 (x + (im.width - score_w) / 2, value_y),
                 score_value,
-                fill=(20, 20, 20),
+                fill=text_colour,
                 font=score_value_font,
             )
 

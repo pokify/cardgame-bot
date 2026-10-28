@@ -240,6 +240,13 @@ async def init_schema() -> None:
             )
         """)
         await conn.execute("""
+            CREATE TABLE IF NOT EXISTS table_colour_settings (
+                chat_id BIGINT PRIMARY KEY,
+                theme TEXT NOT NULL DEFAULT 'white'
+                    CHECK (theme IN ('white', 'green', 'dark_green'))
+            )
+        """)
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS house_gap_boost (
                 chat_id BIGINT NOT NULL,
                 slot INTEGER NOT NULL CHECK (slot BETWEEN 1 AND 4),
@@ -1285,3 +1292,20 @@ async def set_mode_joker_settings(chat_id: int, mode: str, chance: int, penalty:
         INSERT INTO mode_joker_settings(chat_id,mode,chance,penalty) VALUES($1,$2,$3,$4)
         ON CONFLICT(chat_id,mode) DO UPDATE SET chance=EXCLUDED.chance,penalty=EXCLUDED.penalty
     """, chat_id, mode, max(0,min(100,int(chance))), max(-30,min(-1,int(penalty))))
+
+
+async def get_table_colour(chat_id: int) -> str:
+    row = await pool().fetchrow(
+        "SELECT theme FROM table_colour_settings WHERE chat_id=$1", chat_id
+    )
+    return str(row["theme"]) if row else "white"
+
+
+async def set_table_colour(chat_id: int, theme: str) -> None:
+    if theme not in ("white", "green", "dark_green"):
+        theme = "white"
+    await pool().execute(
+        """INSERT INTO table_colour_settings(chat_id, theme) VALUES($1,$2)
+           ON CONFLICT(chat_id) DO UPDATE SET theme=EXCLUDED.theme""",
+        chat_id, theme,
+    )
