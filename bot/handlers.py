@@ -2059,7 +2059,7 @@ async def points_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         cfg = await db.get_gamemode_config(chat.id)
         risk = int(cfg.get("default_house_risk") or 0)
         reward = int(cfg.get("default_house_reward") or 0)
-        lines.extend(["", f"Fixed House points: risk -{risk}/reward +{reward}"])
+        lines.extend(["", f"Fixed House points:\n risk -{risk}/reward +{reward}"])
         boosts = await db.get_house_gap_boosts(chat.id)
         active_boosts = [
             b for b in boosts
@@ -2071,7 +2071,7 @@ async def points_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             lowest = min(int(b["gap_from"]) for b in active_boosts)
             lines.extend([
                 "",
-                f"House will give different risk/reward boost offers if behind leader by {lowest}+ points."
+                f"House r/r boost offers if behind leader by {lowest}+ points."
             ])
 
     max_plays = house.get("max_plays_per_day")
