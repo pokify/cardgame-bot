@@ -2071,7 +2071,7 @@ async def points_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             lowest = min(int(b["gap_from"]) for b in active_boosts)
             lines.extend([
                 "",
-                f"House will offer different risk/reward points for players significantly behind leader by {lowest}+ points."
+                f"House will give different risk/reward boost offers if behind leader by {lowest}+ points."
             ])
 
     max_plays = house.get("max_plays_per_day")
