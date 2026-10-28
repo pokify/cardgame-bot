@@ -774,7 +774,7 @@ async def _house_confirmation_alert(chat_id: int, user, max_plays, pvp, remainin
                     "Click Challenge House to continue."
                 )
         return (
-            f"Fixed House points: -{risk} loss/+{reward} win\n"
+            f"Fixed House points:\n -{risk} loss/+{reward} win\n\n"
             "Click Challenge House to continue."
         )
     return _house_confirm_text(user, max_plays, pvp, remaining)
