@@ -247,6 +247,15 @@ async def init_schema() -> None:
             )
         """)
         await conn.execute("""
+            ALTER TABLE table_colour_settings
+            ADD COLUMN IF NOT EXISTS pfp_enabled BOOLEAN NOT NULL DEFAULT FALSE
+        """)
+        await conn.execute("""
+            ALTER TABLE table_colour_settings
+            ADD COLUMN IF NOT EXISTS pfp_colour TEXT NOT NULL DEFAULT 'white'
+                CHECK (pfp_colour IN ('white', 'green', 'dark_green'))
+        """)
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS house_gap_boost (
                 chat_id BIGINT NOT NULL,
                 slot INTEGER NOT NULL CHECK (slot BETWEEN 1 AND 4),
@@ -1308,4 +1317,26 @@ async def set_table_colour(chat_id: int, theme: str) -> None:
         """INSERT INTO table_colour_settings(chat_id, theme) VALUES($1,$2)
            ON CONFLICT(chat_id) DO UPDATE SET theme=EXCLUDED.theme""",
         chat_id, theme,
+    )
+
+
+async def get_pfp_settings(chat_id: int) -> dict:
+    row = await pool().fetchrow(
+        "SELECT pfp_enabled, pfp_colour FROM table_colour_settings WHERE chat_id=$1", chat_id
+    )
+    if not row:
+        return {"enabled": False, "colour": "white"}
+    return {"enabled": bool(row["pfp_enabled"]), "colour": str(row["pfp_colour"] or "white")}
+
+
+async def set_pfp_settings(chat_id: int, enabled: bool, colour: str) -> None:
+    if colour not in ("white", "green", "dark_green"):
+        colour = "white"
+    await pool().execute(
+        """INSERT INTO table_colour_settings(chat_id, pfp_enabled, pfp_colour)
+           VALUES($1, $2, $3)
+           ON CONFLICT(chat_id) DO UPDATE SET
+               pfp_enabled=EXCLUDED.pfp_enabled,
+               pfp_colour=EXCLUDED.pfp_colour""",
+        chat_id, bool(enabled), colour,
     )

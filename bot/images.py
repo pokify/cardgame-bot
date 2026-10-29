@@ -292,3 +292,84 @@ def render_deal(players: list[dict], theme: str = "white") -> BytesIO:
     canvas.save(buf, format="PNG")
     buf.seek(0)
     return buf
+
+OVERLAY_COLORS = {
+    "white": (248, 248, 248),
+    "green": (5, 219, 26),
+    "dark_green": (53, 156, 37),
+}
+GREY_CIRCLE = (160, 160, 160)  # #A0A0A0
+WHITE = (255, 255, 255)
+
+
+def _make_circular(img: Image.Image, size: int) -> Image.Image:
+    """Return a circular cropped version of img at the given size."""
+    img = img.resize((size, size), Image.Resampling.LANCZOS).convert("RGBA")
+    mask = Image.new("L", (size, size), 0)
+    draw = ImageDraw.Draw(mask)
+    draw.ellipse((0, 0, size - 1, size - 1), fill=255)
+    result = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    result.paste(img, (0, 0), mask)
+    return result
+
+
+def generate_avatar_square(
+    letter: str,
+    overlay_colour: str = "white",
+    pfp_bytes: bytes | None = None,
+    size: int = 512,
+) -> BytesIO:
+    """Create a 1:1 square image with circular avatar (PFP or letter) centered,
+    surrounded by the overlay colour ring."""
+    overlay_rgb = OVERLAY_COLORS.get(overlay_colour, OVERLAY_COLORS["white"])
+    canvas = Image.new("RGB", (size, size), overlay_rgb)
+
+    # Inner avatar size so overlay forms a surrounding ring
+    avatar_size = int(size * 0.78)
+    offset = (size - avatar_size) // 2
+
+    if pfp_bytes:
+        try:
+            pfp = Image.open(BytesIO(pfp_bytes)).convert("RGBA")
+            avatar = _make_circular(pfp, avatar_size)
+        except Exception:
+            avatar = None
+    else:
+        avatar = None
+
+    if avatar is None:
+        # Generate letter avatar: grey circle, white letter, soft shadow
+        avatar = Image.new("RGBA", (avatar_size, avatar_size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(avatar)
+        # Soft shadow (offset darker circle)
+        shadow_offset = max(4, avatar_size // 40)
+        shadow_color = (80, 80, 80, 120)
+        draw.ellipse(
+            (shadow_offset, shadow_offset, avatar_size - 1, avatar_size - 1),
+            fill=shadow_color,
+        )
+        # Main grey circle
+        draw.ellipse((0, 0, avatar_size - 1 - shadow_offset, avatar_size - 1 - shadow_offset), fill=GREY_CIRCLE)
+        # White letter
+        letter = (letter or "U").strip()[:1].upper() or "U"
+        font_size = int(avatar_size * 0.55)
+        try:
+            font = _font(font_size)
+        except Exception:
+            font = ImageFont.load_default()
+        # Center the letter
+        bbox = draw.textbbox((0, 0), letter, font=font)
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+        tx = (avatar_size - shadow_offset - tw) // 2
+        ty = (avatar_size - shadow_offset - th) // 2 - int(th * 0.08)
+        draw.text((tx, ty), letter, font=font, fill=WHITE)
+        avatar = _make_circular(avatar, avatar_size)  # ensure clean circle
+
+    # Paste centered onto overlay background
+    canvas.paste(avatar, (offset, offset), avatar)
+
+    out = BytesIO()
+    canvas.save(out, format="PNG", optimize=True)
+    out.seek(0)
+    return out

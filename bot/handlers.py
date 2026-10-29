@@ -1677,7 +1677,7 @@ def _gm_cb(group_id:int, action:str)->str:
     return f"gm:{group_id}:{action}"
 
 
-def _table_colour_keyboard(group_id: int, theme: str):
+def _table_colour_keyboard(group_id: int, theme: str, pfp_enabled: bool = False, pfp_colour: str = "white"):
     choices = [
         ("White background with black text", "white"),
         ("Green background with white text", "green"),
@@ -1686,11 +1686,40 @@ def _table_colour_keyboard(group_id: int, theme: str):
     rows = [[InlineKeyboardButton(("✓ " if theme == key else "") + label,
                                   callback_data=_gm_cb(group_id, f"tablecolour:{key}"))]
             for label, key in choices]
+    # PFP controls under the dark green option
+    rows.append([InlineKeyboardButton("config PFP in msgs:", callback_data=_gm_cb(group_id, "tablecolour:noop"))])
+    pfp_label = "PFP Enabled" if pfp_enabled else "PFP Disabled"
+    rows.append([InlineKeyboardButton(pfp_label, callback_data=_gm_cb(group_id, "tablecolour:pfptoggle"))])
+    colour_btns = []
+    for label, key in (("White", "white"), ("Green", "green"), ("Dark Green", "dark_green")):
+        prefix = "✓ " if pfp_colour == key else ""
+        colour_btns.append(InlineKeyboardButton(prefix + label, callback_data=_gm_cb(group_id, f"tablecolour:pfpcolour:{key}")))
+    rows.append(colour_btns)
     rows.extend([
         [InlineKeyboardButton("Save", callback_data=_gm_cb(group_id, "tablecolour:save"))],
         [InlineKeyboardButton("Back", callback_data=_gm_cb(group_id, "menu"))],
     ])
     return InlineKeyboardMarkup(rows)
+
+
+def _table_colour_text(theme: str, pfp_enabled: bool, pfp_colour: str) -> str:
+    labels = {
+        "white": ("White", "Black"),
+        "green": ("Green", "White"),
+        "dark_green": ("Dark green", "White"),
+    }
+    bg, fg = labels.get(theme, labels["green"])
+    pfp_status = "Disabled" if not pfp_enabled else {
+        "white": "White",
+        "green": "Green",
+        "dark_green": "Dark green",
+    }.get(pfp_colour, "White")
+    return (
+        "Config background table colour of cards and text scores text and pfps.\n\n"
+        f"Background table: {bg}\n"
+        f"Score Text: {fg}\n"
+        f"PFP:  {pfp_status}"
+    )
 
 
 def _gm_menu_text(mode):
@@ -1714,7 +1743,7 @@ def _gm_menu_keyboard(group_id:int,mode):
           [InlineKeyboardButton("Game Bump Alert",callback_data=_gm_cb(group_id,"bump"))],
           [InlineKeyboardButton("config minimum players",callback_data=_gm_cb(group_id,"minplayers"))],
           [InlineKeyboardButton("lb rank limit",callback_data=_gm_cb(group_id,"lblimit"))],
-          [InlineKeyboardButton("Config Table Colour",callback_data=_gm_cb(group_id,"tablecolour"))]]
+          [InlineKeyboardButton("Config Colours",callback_data=_gm_cb(group_id,"tablecolour"))]]
     return InlineKeyboardMarkup(rows)
 
 
@@ -1804,6 +1833,7 @@ def _schedule_mode_end(context,chat_id:int,mode:dict):
 async def _mode_announce_winner(context,chat_id:int,mode:dict):
     username=mode.get("winner_username") or str(mode.get("winner_user_id"))
     score=int(mode.get("winner_score") or 0)
+    user_id = mode.get("winner_user_id")
     if mode["mode"]=="first":
         text=f"Target met!\nTomochi Cards Winner! {_MODE_WINNER_EMOJI}\n<b>@{username}</b> {score} points!\n\nNo1 rank locked.\n\nview /history"
     else:
@@ -1813,7 +1843,37 @@ async def _mode_announce_winner(context,chat_id:int,mode:dict):
     # The mode's final leaderboard must immediately follow its winner
     # announcement. Build it while the completed mode (including its locked
     # winner) is still available, before the transition back to Tomochi Luck.
-    await context.bot.send_message(chat_id, text, parse_mode="HTML")
+    pfp_settings = await db.get_pfp_settings(chat_id)
+    sent_photo = False
+    if pfp_settings.get("enabled") and user_id:
+        try:
+            from bot.images import generate_avatar_square
+            pfp_bytes = None
+            letter = (username or "U").lstrip("@")[:1].upper() or "U"
+            try:
+                photos = await context.bot.get_user_profile_photos(user_id, limit=1)
+                if photos.total_count > 0 and photos.photos:
+                    file_id = photos.photos[0][-1].file_id
+                    tg_file = await context.bot.get_file(file_id)
+                    pfp_bytes = await tg_file.download_as_bytearray()
+            except Exception:
+                pfp_bytes = None
+            avatar = generate_avatar_square(
+                letter=letter,
+                overlay_colour=pfp_settings.get("colour", "white"),
+                pfp_bytes=bytes(pfp_bytes) if pfp_bytes else None,
+            )
+            await context.bot.send_photo(
+                chat_id,
+                photo=InputFile(avatar, filename="winner_pfp.png"),
+                caption=text,
+                parse_mode="HTML",
+            )
+            sent_photo = True
+        except Exception:
+            log.exception("Could not send winner PFP for chat %s", chat_id)
+    if not sent_photo:
+        await context.bot.send_message(chat_id, text, parse_mode="HTML")
     try:
         final_leaderboard = await _cards_lb(chat_id)
         await context.bot.send_message(
@@ -2774,37 +2834,50 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
         return
     if action == "tablecolour":
         theme = await db.get_table_colour(gid)
-        _GAME_MODE_DRAFT[(gid, q.from_user.id)] = {"mode": "tablecolour", "theme": theme}
+        pfp = await db.get_pfp_settings(gid)
+        draft = {"mode": "tablecolour", "theme": theme, "pfp_enabled": pfp["enabled"], "pfp_colour": pfp["colour"]}
+        _GAME_MODE_DRAFT[(gid, q.from_user.id)] = draft
         await q.answer()
-        labels = {"white": ("White", "Black"), "green": ("Green", "White"), "dark_green": ("Dark green", "White")}
-        bg, fg = labels.get(theme, labels["white"])
         await q.edit_message_text(
-            f"Config background table colour of cards and text scores text\n\nBackground: {bg}\nText: {fg}",
-            reply_markup=_table_colour_keyboard(gid, theme),
+            _table_colour_text(theme, pfp["enabled"], pfp["colour"]),
+            reply_markup=_table_colour_keyboard(gid, theme, pfp["enabled"], pfp["colour"]),
         )
         return
     if action.startswith("tablecolour:"):
         sub = action.split(":", 1)[1]
+        pfp_default = await db.get_pfp_settings(gid)
         draft = _GAME_MODE_DRAFT.setdefault(
             (gid, q.from_user.id),
-            {"mode": "tablecolour", "theme": await db.get_table_colour(gid)}
+            {"mode": "tablecolour", "theme": await db.get_table_colour(gid),
+             "pfp_enabled": pfp_default["enabled"], "pfp_colour": pfp_default["colour"]}
         )
         if sub in ("white", "green", "dark_green"):
             draft["theme"] = sub
-            labels = {"white": ("White", "Black"), "green": ("Green", "White"), "dark_green": ("Dark green", "White")}
-            bg, fg = labels[sub]
+        elif sub == "pfptoggle":
+            draft["pfp_enabled"] = not draft.get("pfp_enabled", False)
+        elif sub.startswith("pfpcolour:"):
+            colour = sub.split(":", 1)[1]
+            if colour in ("white", "green", "dark_green"):
+                draft["pfp_colour"] = colour
+        elif sub == "noop":
             await q.answer()
-            await q.edit_message_text(
-            f"Config background table colour of cards and text scores text\n\nBackground: {bg}\nText: {fg}",
-                reply_markup=_table_colour_keyboard(gid, sub),
-            )
             return
-        if sub == "save":
+        elif sub == "save":
             await db.set_table_colour(gid, draft.get("theme", "green"))
+            await db.set_pfp_settings(gid, draft.get("pfp_enabled", False), draft.get("pfp_colour", "white"))
             _GAME_MODE_DRAFT.pop((gid, q.from_user.id), None)
             await q.answer("Saved.")
-            await q.edit_message_text("Table colour settings saved.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=_gm_cb(gid, "menu"))]]))
+            await q.edit_message_text("Colour settings saved.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=_gm_cb(gid, "menu"))]]))
             return
+        else:
+            await q.answer()
+            return
+        await q.answer()
+        await q.edit_message_text(
+            _table_colour_text(draft["theme"], draft.get("pfp_enabled", False), draft.get("pfp_colour", "white")),
+            reply_markup=_table_colour_keyboard(gid, draft["theme"], draft.get("pfp_enabled", False), draft.get("pfp_colour", "white")),
+        )
+        return
     if action == "lblimit":
         value = await db.get_leaderboard_rank_limit(gid)
         _GAME_MODE_DRAFT[(gid, q.from_user.id)] = {"mode": "lblimit", "value": value}
