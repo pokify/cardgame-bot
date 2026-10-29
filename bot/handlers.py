@@ -103,7 +103,7 @@ _tomochi_luck_rank_snapshot_initialized: set[int] = set()
 
 async def _tomochi_luck_lb(chat_id: int) -> str:
     if not await db.tomochi_luck_leaderboard_visible(chat_id):
-        return "<b>Tomochi Luck leaderboard will return after the next completed Tomochi Luck game.</b>"
+        return "<b>Game ended.\n\nReturning Tomochi Luck.</b>"
     rank_limit = await db.get_leaderboard_rank_limit(chat_id)
     rows = await db.tomochi_luck_leaderboard(chat_id, rank_limit if rank_limit > 0 else 10000)
     if not await db.tomochi_luck_house_on_lb(chat_id):
