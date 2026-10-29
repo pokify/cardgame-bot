@@ -1810,7 +1810,21 @@ async def _mode_announce_winner(context,chat_id:int,mode:dict):
         days=int(mode.get("days") or 0)
         duration=f"{days*24}hrs" if days in (1,2,3) else f"{days} days"
         text=f"Highest score game over!\nTomochi Cards Winner! {_MODE_WINNER_EMOJI}\n<b>@{username}</b> claims highest score ({score}) after {duration}.\n\nNo1 rank locked.\n\nview /history"
-    await context.bot.send_message(chat_id,text,parse_mode="HTML")
+    # The mode's final leaderboard must immediately follow its winner
+    # announcement. Build it while the completed mode (including its locked
+    # winner) is still available, before the transition back to Tomochi Luck.
+    await context.bot.send_message(chat_id, text, parse_mode="HTML")
+    try:
+        final_leaderboard = await _cards_lb(chat_id)
+        await context.bot.send_message(
+            chat_id,
+            final_leaderboard,
+            parse_mode="HTML",
+            reply_markup=_leaderboard_markup(mode.get("mode")),
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        log.exception("Could not post final leaderboard for completed game mode in chat %s", chat_id)
 
 
 async def _finish_game_mode_to_luck(context, chat_id:int):
