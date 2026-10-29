@@ -338,33 +338,22 @@ def generate_avatar_square(
         avatar = None
 
     if avatar is None:
-        # Generate letter avatar: grey circle, white letter, soft shadow
+        # Generate letter avatar: solid grey circle with perfectly centered white letter
         avatar = Image.new("RGBA", (avatar_size, avatar_size), (0, 0, 0, 0))
         draw = ImageDraw.Draw(avatar)
-        # Soft shadow (offset darker circle)
-        shadow_offset = max(4, avatar_size // 40)
-        shadow_color = (80, 80, 80, 120)
-        draw.ellipse(
-            (shadow_offset, shadow_offset, avatar_size - 1, avatar_size - 1),
-            fill=shadow_color,
-        )
-        # Main grey circle
-        draw.ellipse((0, 0, avatar_size - 1 - shadow_offset, avatar_size - 1 - shadow_offset), fill=GREY_CIRCLE)
-        # White letter
+        # Full grey circle (no shadow)
+        draw.ellipse((0, 0, avatar_size - 1, avatar_size - 1), fill=GREY_CIRCLE)
+        # White letter, optically centered
         letter = (letter or "U").strip()[:1].upper() or "U"
-        font_size = int(avatar_size * 0.55)
+        font_size = int(avatar_size * 0.52)
         try:
             font = _font(font_size)
         except Exception:
             font = ImageFont.load_default()
-        # Center the letter
-        bbox = draw.textbbox((0, 0), letter, font=font)
-        tw = bbox[2] - bbox[0]
-        th = bbox[3] - bbox[1]
-        tx = (avatar_size - shadow_offset - tw) // 2
-        ty = (avatar_size - shadow_offset - th) // 2 - int(th * 0.08)
-        draw.text((tx, ty), letter, font=font, fill=WHITE)
-        avatar = _make_circular(avatar, avatar_size)  # ensure clean circle
+        # Use middle-middle anchor so the letter is centered in the circle
+        center = avatar_size // 2
+        draw.text((center, center), letter, font=font, fill=WHITE, anchor="mm")
+        avatar = _make_circular(avatar, avatar_size)
 
     # Paste centered onto overlay background
     canvas.paste(avatar, (offset, offset), avatar)

@@ -1739,11 +1739,11 @@ def _gm_menu_keyboard(group_id:int,mode):
           [InlineKeyboardButton("First to x Points",callback_data=_gm_cb(group_id,"first"))],
           [InlineKeyboardButton("Tomochi Luck",callback_data=_gm_cb(group_id,"luck"))],
           [InlineKeyboardButton("Points Settings",callback_data=_gm_cb(group_id,"pointsinfo"))],
-          [InlineKeyboardButton("House Settings 2",callback_data=_gm_cb(group_id,"house2"))],
-          [InlineKeyboardButton("Game Bump Alert",callback_data=_gm_cb(group_id,"bump"))],
+          [InlineKeyboardButton("House Settings",callback_data=_gm_cb(group_id,"house2"))],
           [InlineKeyboardButton("config minimum players",callback_data=_gm_cb(group_id,"minplayers"))],
+          [InlineKeyboardButton("Config Colours",callback_data=_gm_cb(group_id,"tablecolour"))],
           [InlineKeyboardButton("lb rank limit",callback_data=_gm_cb(group_id,"lblimit"))],
-          [InlineKeyboardButton("Config Colours",callback_data=_gm_cb(group_id,"tablecolour"))]]
+          [InlineKeyboardButton("Game Bump Alert",callback_data=_gm_cb(group_id,"bump"))]]
     return InlineKeyboardMarkup(rows)
 
 
@@ -2691,14 +2691,14 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
     if action == "house2":
         cfg = await db.get_gamemode_config(gid)
         await q.answer()
-        await q.edit_message_text("<b>House Settings 2</b>",parse_mode="HTML",reply_markup=_house2_keyboard(gid,cfg["house_points_enabled"]))
+        await q.edit_message_text("<b>House Settings</b>",parse_mode="HTML",reply_markup=_house2_keyboard(gid,cfg["house_points_enabled"]))
         return
     if action == "house2toggle":
         cfg = await db.get_gamemode_config(gid)
         await db.save_gamemode_config(gid, house_points_enabled=not cfg["house_points_enabled"])
         cfg = await db.get_gamemode_config(gid)
         await q.answer("Saved.")
-        await q.edit_message_text("<b>House Settings 2</b>",parse_mode="HTML",reply_markup=_house2_keyboard(gid,cfg["house_points_enabled"]))
+        await q.edit_message_text("<b>House Settings</b>",parse_mode="HTML",reply_markup=_house2_keyboard(gid,cfg["house_points_enabled"]))
         return
     if action == "houselimit":
         settings = await db.get_house_settings(gid)
@@ -2930,7 +2930,7 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
     if action == "houseinfo":
         await q.answer()
         cfg = await db.get_gamemode_config(gid)
-        await q.edit_message_text("<b>House Settings 2</b>",parse_mode="HTML",reply_markup=_house2_keyboard(gid,cfg["house_points_enabled"]))
+        await q.edit_message_text("<b>House Settings</b>",parse_mode="HTML",reply_markup=_house2_keyboard(gid,cfg["house_points_enabled"]))
         return
     if action == "bump":
         if not mode or not (mode.get("active") or mode.get("pending")):
