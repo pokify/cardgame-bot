@@ -11,6 +11,7 @@ from bot.config import CARDS, CARDS_DIR
 BASE_DIR = Path(__file__).resolve().parent.parent
 BUNDLED_FONT = BASE_DIR / "assets" / "fonts" / "DejaVuSans-Bold.ttf"
 FREDOKA_FONT = BASE_DIR / "assets" / "fonts" / "Fredoka-SemiBold.ttf"
+TROPHY_PATH = BASE_DIR / "assets" / "gameimages" / "trophy.png"
 
 # Render the source card artwork at 50% of its native 418x579 size.
 CARD_SCALE = 0.50
@@ -361,6 +362,18 @@ def generate_avatar_square(
 
     # Paste centered onto overlay background
     canvas.paste(avatar, (offset, offset), avatar)
+
+    # Overlay trophy in the top-left corner
+    try:
+        if TROPHY_PATH.exists():
+            trophy = Image.open(TROPHY_PATH).convert("RGBA")
+            trophy_size = int(size * 0.28)  # ~28% of canvas, similar to example
+            trophy = trophy.resize((trophy_size, trophy_size), Image.Resampling.LANCZOS)
+            # Position top-left with a small margin so it sits over the circle edge
+            margin = int(size * 0.02)
+            canvas.paste(trophy, (margin, margin), trophy)
+    except Exception:
+        pass  # silently skip if trophy cannot be loaded
 
     out = BytesIO()
     canvas.save(out, format="PNG", optimize=True)
