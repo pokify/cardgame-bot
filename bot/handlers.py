@@ -1054,12 +1054,14 @@ async def _run_house_challenge(
                 winner_mode = await db.check_first_to_winner(chat_id)
                 if winner_mode:
                     await _mode_announce_winner(context, chat_id, winner_mode)
+                    await _finish_game_mode_to_luck(context, chat_id)
             elif mode.get("mode") == "highest":
                 ends_at = mode.get("ends_at")
                 if ends_at and ends_at <= datetime.now(timezone.utc):
                     winner_mode = await db.highest_score_winner(chat_id)
                     if winner_mode and winner_mode.get("winner_user_id"):
                         await _mode_announce_winner(context, chat_id, winner_mode)
+                        await _finish_game_mode_to_luck(context, chat_id)
     except Exception:
         log.exception("Could not process House game-mode bookkeeping for game %s", game_id)
 
@@ -1811,12 +1813,21 @@ async def _mode_announce_winner(context,chat_id:int,mode:dict):
     await context.bot.send_message(chat_id,text,parse_mode="HTML")
 
 
+async def _finish_game_mode_to_luck(context, chat_id:int):
+    """End a completed First/Highest mode so the next /cards lobby uses Tomochi Luck."""
+    await db.end_game_mode(chat_id)
+    await db.set_tomochi_luck_leaderboard_visible(chat_id, False)
+    for job in context.job_queue.get_jobs_by_name(f"modeend:{chat_id}"):
+        job.schedule_removal()
+
+
 async def mode_end_job(context:ContextTypes.DEFAULT_TYPE):
     chat_id=(context.job.data or {}).get("chat_id")
     if not chat_id: return
     mode=await db.highest_score_winner(chat_id)
     if mode and mode.get("winner_user_id"):
         await _mode_announce_winner(context,chat_id,mode)
+        await _finish_game_mode_to_luck(context, chat_id)
 
 
 async def _record_mode_after_cards(context,chat_id:int,players:list):
@@ -1828,8 +1839,7 @@ async def _record_mode_after_cards(context,chat_id:int,players:list):
         winner=await db.check_first_to_winner(chat_id)
         if winner:
             await _mode_announce_winner(context,chat_id,winner)
-            await db.end_game_mode(chat_id)
-            await db.set_tomochi_luck_leaderboard_visible(chat_id, False)
+            await _finish_game_mode_to_luck(context, chat_id)
 
 
 def _mode_status_html(mode:dict,rows:list)->str:
