@@ -242,7 +242,7 @@ async def init_schema() -> None:
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS table_colour_settings (
                 chat_id BIGINT PRIMARY KEY,
-                theme TEXT NOT NULL DEFAULT 'white'
+                theme TEXT NOT NULL DEFAULT 'green'
                     CHECK (theme IN ('white', 'green', 'dark_green'))
             )
         """)
@@ -1298,12 +1298,12 @@ async def get_table_colour(chat_id: int) -> str:
     row = await pool().fetchrow(
         "SELECT theme FROM table_colour_settings WHERE chat_id=$1", chat_id
     )
-    return str(row["theme"]) if row else "white"
+    return str(row["theme"]) if row else "green"
 
 
 async def set_table_colour(chat_id: int, theme: str) -> None:
     if theme not in ("white", "green", "dark_green"):
-        theme = "white"
+        theme = "green"
     await pool().execute(
         """INSERT INTO table_colour_settings(chat_id, theme) VALUES($1,$2)
            ON CONFLICT(chat_id) DO UPDATE SET theme=EXCLUDED.theme""",

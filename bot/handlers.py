@@ -753,6 +753,17 @@ async def _house_cooldown_text(user, used: int) -> str:
     )
 
 
+def _house_offer_remaining_text(user, max_plays: int | None, remaining: int | None) -> str:
+    who = _house_display_name(user)
+    if max_plays is None:
+        allowance = "unlimited challenges"
+    else:
+        count = max(0, int(remaining if remaining is not None else max_plays))
+        noun = "challenge" if count == 1 else "challenges"
+        allowance = f"{count} House {noun}"
+    return f"{who} you have {allowance} left today."
+
+
 async def _house_confirmation_alert(chat_id: int, user, max_plays, pvp, remaining) -> str:
     mode = await db.get_game_mode(chat_id)
     if mode and (mode.get("active") or mode.get("pending")) and mode.get("mode") in ("first", "highest"):
@@ -764,17 +775,19 @@ async def _house_confirmation_alert(chat_id: int, user, max_plays, pvp, remainin
         own_score = scores.get(int(user.id), 0)
         leader_score = max(scores.values(), default=own_score)
         gap = max(0, leader_score - own_score)
+        allowance = _house_offer_remaining_text(user, max_plays, remaining)
         for boost in await db.get_house_gap_boosts(chat_id):
             start, end = int(boost.get("gap_from") or 0), int(boost.get("gap_to") or 0)
             br, bw = int(boost.get("risk") or 0), int(boost.get("reward") or 0)
             if end > 0 and start > 0 and start <= gap <= end and (br > 0 or bw > 0):
                 return (
-                    f"House gap boost offer:\n"
-                    f"-{br} risk/reward +{bw} win\n"
+                    f"House gap boost offer: -{br} risk/+{bw} reward\n\n"
+                    f"{allowance}\n"
                     "Click Challenge House to continue."
                 )
         return (
-            f"Fixed House points:\n -{risk} risk/+{reward} reward\n\n"
+            f"Fixed House points: -{risk} risk/+{reward} reward\n\n"
+            f"{allowance}\n"
             "Click Challenge House to continue."
         )
     return _house_confirm_text(user, max_plays, pvp, remaining)
@@ -2763,7 +2776,7 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
             )
             return
         if sub == "save":
-            await db.set_table_colour(gid, draft.get("theme", "white"))
+            await db.set_table_colour(gid, draft.get("theme", "green"))
             _GAME_MODE_DRAFT.pop((gid, q.from_user.id), None)
             await q.answer("Saved.")
             await q.edit_message_text("Table colour settings saved.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=_gm_cb(gid, "menu"))]]))
