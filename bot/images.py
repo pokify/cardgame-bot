@@ -367,7 +367,7 @@ def generate_avatar_square(
     try:
         if TROPHY_PATH.exists():
             trophy = Image.open(TROPHY_PATH).convert("RGBA")
-            trophy_size = int(size * 0.28)  # ~28% of canvas, similar to example
+            trophy_size = int(size * 0.35)  # ~28% of canvas, similar to example
             trophy = trophy.resize((trophy_size, trophy_size), Image.Resampling.LANCZOS)
             # Position top-left with a small margin so it sits over the circle edge
             margin = int(size * 0.02)
