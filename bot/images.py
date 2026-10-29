@@ -10,6 +10,7 @@ from bot.config import CARDS, CARDS_DIR
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 BUNDLED_FONT = BASE_DIR / "assets" / "fonts" / "DejaVuSans-Bold.ttf"
+FREDOKA_FONT = BASE_DIR / "assets" / "fonts" / "Fredoka-SemiBold.ttf"
 
 # Render the source card artwork at 50% of its native 418x579 size.
 CARD_SCALE = 0.50
@@ -347,9 +348,12 @@ def generate_avatar_square(
         letter = (letter or "U").strip()[:1].upper() or "U"
         font_size = int(avatar_size * 0.52)
         try:
-            font = _font(font_size)
+            font = ImageFont.truetype(str(FREDOKA_FONT), font_size)
         except Exception:
-            font = ImageFont.load_default()
+            try:
+                font = _font(font_size)
+            except Exception:
+                font = ImageFont.load_default()
         # Use middle-middle anchor so the letter is centered in the circle
         center = avatar_size // 2
         draw.text((center, center), letter, font=font, fill=WHITE, anchor="mm")
