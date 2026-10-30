@@ -2146,7 +2146,6 @@ async def points_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     lines = [
         "Current Game Points:",
-        "",
         f"2P {int(pvp.get('base_2') or 0)} + {join_bonus(2)} join bonus",
         f"3P {int(pvp.get('base_3') or 0)} + {join_bonus(3)} join bonus",
         f"4P {int(pvp.get('base_4') or 0)} + {join_bonus(4)} join bonus",
