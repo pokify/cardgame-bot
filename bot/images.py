@@ -12,6 +12,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 BUNDLED_FONT = BASE_DIR / "assets" / "fonts" / "DejaVuSans-Bold.ttf"
 FREDOKA_FONT = BASE_DIR / "assets" / "fonts" / "Fredoka-SemiBold.ttf"
 TROPHY_PATH = BASE_DIR / "assets" / "gameimages" / "trophy.png"
+FLYINGCARDS_PATH = BASE_DIR / "assets" / "gameimages" / "flyingcards.png"
 
 # Render the source card artwork at 50% of its native 418x579 size.
 CARD_SCALE = 0.50
@@ -363,7 +364,16 @@ def generate_avatar_square(
     # Paste centered onto overlay background
     canvas.paste(avatar, (offset, offset), avatar)
 
-    # Overlay trophy in the top-left corner
+    # Place flyingcards on top of the mask (centered over the circle)
+    try:
+        if FLYINGCARDS_PATH.exists():
+            cards = Image.open(FLYINGCARDS_PATH).convert("RGBA")
+            cards = cards.resize((avatar_size, avatar_size), Image.Resampling.LANCZOS)
+            canvas.paste(cards, (offset, offset), cards)
+    except Exception:
+        pass
+
+    # Overlay trophy in the top-left corner (on top of flyingcards)
     try:
         if TROPHY_PATH.exists():
             trophy = Image.open(TROPHY_PATH).convert("RGBA")
