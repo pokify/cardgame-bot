@@ -366,7 +366,7 @@ def generate_avatar_square(
 
     # Place flyingcards on top of the mask (always centered)
     # FLYINGCARDS_SCALE: 1.0 = same size as the mask, >1.0 bigger, <1.0 smaller
-    FLYINGCARDS_SCALE = 1.50
+    FLYINGCARDS_SCALE = 1.30
     try:
         if FLYINGCARDS_PATH.exists():
             cards = Image.open(FLYINGCARDS_PATH).convert("RGBA")
