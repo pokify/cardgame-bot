@@ -1850,8 +1850,7 @@ async def _mode_announce_winner(context,chat_id:int,mode:dict):
     score=int(mode.get("winner_score") or 0)
     user_id = mode.get("winner_user_id")
     if mode["mode"]=="first":
-        text=f"Target met!\nTomochi Cards Winner! {_MODE_WINNER_EMOJI}\n<b>@{username}</b> {score} points!\n\nGame
-        ended.\n\nview /history"
+        text=f"Target met!\nTomochi Cards Winner! {_MODE_WINNER_EMOJI}\n<b>@{username}</b> {score} points!\n\nGame ended.\n\nview /history"
     else:
         days=int(mode.get("days") or 0)
         duration=f"{days*24}hrs" if days in (1,2,3) else f"{days} days"
