@@ -779,7 +779,15 @@ async def _house_confirmation_alert(chat_id: int, user, max_plays, pvp, remainin
         for boost in await db.get_house_gap_boosts(chat_id):
             start, end = int(boost.get("gap_from") or 0), int(boost.get("gap_to") or 0)
             br, bw = int(boost.get("risk") or 0), int(boost.get("reward") or 0)
-            if end > 0 and start > 0 and start <= gap <= end and (br > 0 or bw > 0):
+            slot = int(boost.get("slot") or 0)
+            if slot == 1:
+                if start > 0 and gap == start and (br > 0 or bw > 0):
+                    return (
+                        f"House gap boost offer: -{br} risk/+{bw} reward\n\n"
+                        f"{allowance}\n"
+                        "Click Challenge House to continue."
+                    )
+            elif end > 0 and start > 0 and start <= gap <= end and (br > 0 or bw > 0):
                 return (
                     f"House gap boost offer: -{br} risk/+{bw} reward\n\n"
                     f"{allowance}\n"
@@ -847,7 +855,7 @@ async def house_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             own_score = next((score for score, uid in scores if uid == user.id), 0)
             next_score = max((score for score, uid in scores if uid != user.id), default=own_score)
             if own_score - next_score >= disable_gap and own_score >= next_score:
-                await query.answer("House challenges are temporarily disabled for the leader.", show_alert=True)
+                await query.answer(f"House challenge disabled if ahead by {disable_gap}+ points.", show_alert=True)
                 return
 
     required_pvp = max(0, int(settings.get("pvp_before_unlock", 1)))
@@ -958,7 +966,14 @@ async def _run_house_challenge(
         player_score = next((int(r["score"] or 0) for r in standings if int(r["user_id"]) == int(user_id)), 0)
         gap = max(0, leader_score - player_score)
         for boost in await db.get_house_gap_boosts(chat_id):
-            if int(boost["gap_to"]) > 0 and int(boost["gap_from"]) <= gap <= int(boost["gap_to"]):
+            slot = int(boost.get("slot") or 0)
+            gf, gt = int(boost["gap_from"]), int(boost["gap_to"])
+            if slot == 1:
+                if gf > 0 and gap == gf:
+                    house_risk, house_reward = int(boost["risk"]), int(boost["reward"])
+                    boosted = True
+                    break
+            elif gt > 0 and gf <= gap <= gt:
                 house_risk, house_reward = int(boost["risk"]), int(boost["reward"])
                 boosted = True
                 break
@@ -2424,7 +2439,8 @@ async def game_bump_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         ends_text = f"{hours:02d}:{mins:02d}mins"
         text = f"<b>Game in play:</b>\n\n<b>Highest Score Wins</b>\n\nLeader: {username}\nPoints: {score}\nEnds: {ends_text}"
     else:
-        text = f"<b>Game in play:</b>\n\n<b>First to x Points</b>\n\nLeader: {username}\nPoints: {score}"
+        target = int(mode.get("target") or 0)
+        text = f"<b>Game in play:</b>\n\n<b>First to {target} Points</b>\n\nLeader: @{username}\nPoints: {score}"
     # Remove the previous Game in play reminder for this chat before posting the new one.
     previous_ids = context.bot_data.setdefault("game_in_play_message_ids", {})
     previous_id = previous_ids.get(chat_id)
@@ -2585,7 +2601,12 @@ def _house2_keyboard(gid: int, enabled: bool):
 
 
 def _house_points_text(cfg: dict, boosts: list[dict]) -> str:
-    rows = [f"Points Gap {b['gap_from']}-{b['gap_to']}: risk/rwd -{b['risk']}/{b['reward']}" for b in boosts]
+    rows = []
+    for b in boosts:
+        if int(b.get("slot", 0)) == 1:
+            rows.append(f"Points Gap {b['gap_from']}: risk/rwd -{b['risk']}/{b['reward']}")
+        else:
+            rows.append(f"Points Gap {b['gap_from']}-{b['gap_to']}: risk/rwd -{b['risk']}/{b['reward']}")
     return ("<b>Configure house challenge risk and reward points for all players and house boost.</b>\n\n"
             f"Default House Risk/Reward: -{cfg['default_house_risk']}/+{cfg['default_house_reward']}\n\n"
             f"Temporarily disable house for leader if ahead by: {'OFF' if int(cfg['leader_disable_gap']) < 1 else str(cfg['leader_disable_gap']) + ' points'}\n\n"
@@ -2608,7 +2629,10 @@ def _house_points_keyboard(gid: int, cfg: dict, boosts: list[dict]):
     ]
     for b in boosts:
         slot = int(b["slot"])
-        label = f"Gap: {b['gap_from']} to {b['gap_to']} · R/R: -{b['risk']} / +{b['reward']}"
+        if slot == 1:
+            label = f"Gap: {b['gap_from']} · R/R: -{b['risk']} / +{b['reward']}"
+        else:
+            label = f"Gap: {b['gap_from']} to {b['gap_to']} · R/R: -{b['risk']} / +{b['reward']}"
         rows.append([InlineKeyboardButton(label, callback_data=_gm_cb(gid, f"hpedit:{slot}"))])
     rows += [
         [InlineKeyboardButton("Save", callback_data=_gm_cb(gid,"housepointssave"))],
@@ -2620,13 +2644,22 @@ def _house_points_keyboard(gid: int, cfg: dict, boosts: list[dict]):
 
 def _house_boost_edit_keyboard(gid: int, boost: dict):
     slot = int(boost["slot"])
-    rows = [
-        [InlineKeyboardButton(f"Gap start: {boost['gap_from']}", callback_data=_gm_cb(gid,"hpnoop"))],
-        [InlineKeyboardButton("−", callback_data=_gm_cb(gid,f"hpedit:{slot}:gap_from:-")),
-         InlineKeyboardButton("+", callback_data=_gm_cb(gid,f"hpedit:{slot}:gap_from:+"))],
-        [InlineKeyboardButton(f"Gap end: {boost['gap_to']}", callback_data=_gm_cb(gid,"hpnoop"))],
-        [InlineKeyboardButton("−", callback_data=_gm_cb(gid,f"hpedit:{slot}:gap_to:-")),
-         InlineKeyboardButton("+", callback_data=_gm_cb(gid,f"hpedit:{slot}:gap_to:+"))],
+    if slot == 1:
+        rows = [
+            [InlineKeyboardButton(f"Points Gap: {boost['gap_from']}", callback_data=_gm_cb(gid,"hpnoop"))],
+            [InlineKeyboardButton("−", callback_data=_gm_cb(gid,f"hpedit:{slot}:gap_from:-")),
+             InlineKeyboardButton("+", callback_data=_gm_cb(gid,f"hpedit:{slot}:gap_from:+"))],
+        ]
+    else:
+        rows = [
+            [InlineKeyboardButton(f"Gap start: {boost['gap_from']}", callback_data=_gm_cb(gid,"hpnoop"))],
+            [InlineKeyboardButton("−", callback_data=_gm_cb(gid,f"hpedit:{slot}:gap_from:-")),
+             InlineKeyboardButton("+", callback_data=_gm_cb(gid,f"hpedit:{slot}:gap_from:+"))],
+            [InlineKeyboardButton(f"Gap end: {boost['gap_to']}", callback_data=_gm_cb(gid,"hpnoop"))],
+            [InlineKeyboardButton("−", callback_data=_gm_cb(gid,f"hpedit:{slot}:gap_to:-")),
+             InlineKeyboardButton("+", callback_data=_gm_cb(gid,f"hpedit:{slot}:gap_to:+"))],
+        ]
+    rows += [
         [InlineKeyboardButton(f"Risk: -{boost['risk']}", callback_data=_gm_cb(gid,"hpnoop"))],
         [InlineKeyboardButton("−", callback_data=_gm_cb(gid,f"hpedit:{slot}:risk:-")),
          InlineKeyboardButton("+", callback_data=_gm_cb(gid,f"hpedit:{slot}:risk:+"))],
@@ -2728,7 +2761,7 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
         if len(bits) == 2:
             await q.answer()
             await q.edit_message_text(
-                f"<b>House R/R Gap Boost {slot}</b>\\n\\nSet the gap range and risk/reward for this boost.",
+                f"<b>House R/R Gap Boost {slot}</b>\n\nSet the gap range and risk/reward for this boost.",
                 parse_mode="HTML", reply_markup=_house_boost_edit_keyboard(gid, boost)
             )
             return
@@ -2745,7 +2778,7 @@ async def gamemode_cb(update:Update,context:ContextTypes.DEFAULT_TYPE)->None:
             boost[sub] = max(0, min(100, int(boost.get(sub, 0)) + step))
             await q.answer()
             await q.edit_message_text(
-                f"<b>House R/R Gap Boost {slot}</b>\\n\\nSet the gap range and risk/reward for this boost.",
+                f"<b>House R/R Gap Boost {slot}</b>\n\nSet the gap range and risk/reward for this boost.",
                 parse_mode="HTML", reply_markup=_house_boost_edit_keyboard(gid, boost)
             )
             return
