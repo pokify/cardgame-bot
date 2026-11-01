@@ -364,12 +364,18 @@ def generate_avatar_square(
     # Paste centered onto overlay background
     canvas.paste(avatar, (offset, offset), avatar)
 
-    # Place flyingcards on top of the mask (centered over the circle)
+    # Place flyingcards on top of the mask (always centered)
+    # FLYINGCARDS_SCALE: 1.0 = same size as the mask, >1.0 bigger, <1.0 smaller
+    FLYINGCARDS_SCALE = 1.0
     try:
         if FLYINGCARDS_PATH.exists():
             cards = Image.open(FLYINGCARDS_PATH).convert("RGBA")
-            cards = cards.resize((avatar_size, avatar_size), Image.Resampling.LANCZOS)
-            canvas.paste(cards, (offset, offset), cards)
+            cards_size = int(avatar_size * FLYINGCARDS_SCALE)
+            cards = cards.resize((cards_size, cards_size), Image.Resampling.LANCZOS)
+            # Keep it centered on the mask no matter the scale
+            cards_x = offset + (avatar_size - cards_size) // 2
+            cards_y = offset + (avatar_size - cards_size) // 2
+            canvas.paste(cards, (cards_x, cards_y), cards)
     except Exception:
         pass
 
